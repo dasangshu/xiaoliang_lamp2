@@ -1,0 +1,7 @@
+dependencies:
+  idf: '>=5.4'
+description: This is a microcontroller peripheral driver library written based on
+  C++11 and later versions.
+license: GPL-3.0
+url: https://github.com/Llgok/cpp_bus_driver.git
+version: 1.1.0
