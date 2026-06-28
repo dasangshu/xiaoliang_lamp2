@@ -1,0 +1,27 @@
+{
+  "generation_timestamp": "2025-08-06T14:34:46.880145",
+  "output_directory": "/private/var/www/work/esp-dl/models/coco_pose/p4",
+  "results": [
+    {
+      "size": 224,
+      "espdl_path": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_224_p4_generated.espdl",
+      "config_path": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_224_p4_generated.json",
+      "status": "success"
+    },
+    {
+      "size": 256,
+      "espdl_path": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_256_p4_generated.espdl",
+      "config_path": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_256_p4_generated.json",
+      "status": "success"
+    },
+    {
+      "size": 320,
+      "espdl_path": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_320_p4_generated.espdl",
+      "config_path": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_320_p4_generated.json",
+      "status": "success"
+    }
+  ],
+  "total_models": 3,
+  "successful": 3,
+  "failed": 0
+}

@@ -26,6 +26,11 @@ set(SOURCES "audio/audio_codec.cc"
             "display/lvgl_display/gif/gifdec.c"
             "display/lvgl_display/jpg/image_to_jpeg.cpp"
             "display/lvgl_display/jpg/jpeg_to_image.c"
+            "display/mjpeg_player/esp_mjpeg_player.c"
+            "display/mjpeg_player/media_src_storage.c"
+            "display/mjpeg_player/fs_manager.c"
+            "display/mjpeg_player/mjpeg_player_port.cc"
+            "display/mjpeg_player/mjpeg_dispatch.cc"
             "protocols/protocol.cc"
             "protocols/mqtt_protocol.cc"
             "protocols/websocket_protocol.cc"
@@ -39,7 +44,7 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "display/mjpeg_player" "audio" "audio/demuxer" "protocols")
 
 # Add board common files
 list(APPEND SOURCES
@@ -906,6 +911,8 @@ if(CONFIG_IDF_TARGET_ESP32S3)
     list(APPEND SOURCES "boards/common/esp32_camera.cc")
 endif()
 
+list(APPEND SOURCES "posture/posture_detector.cc")
+
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
@@ -928,6 +935,8 @@ idf_component_register(SRCS ${SOURCES}
                         efuse
                         bt
                         fatfs
+                        coco_pose
+                        esp-dl
                     )
 
 # Use target_compile_definitions to define BOARD_TYPE, BOARD_NAME
@@ -938,6 +947,7 @@ endif()
 target_compile_definitions(${COMPONENT_LIB}
                     PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
                     PRIVATE BUILTIN_TEXT_FONT=${BUILTIN_TEXT_FONT} BUILTIN_ICON_FONT=${BUILTIN_ICON_FONT}
+                    PRIVATE CONFIG_MJPEG_ASSETS_PATH=\"${CONFIG_MJPEG_ASSETS_PATH}\"
                     )
 
 # Add generation rules

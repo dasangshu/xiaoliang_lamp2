@@ -34,7 +34,15 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
-    bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
+    bool hide_subtitle_ = false;
+
+    // Face canvas ping-pong buffers for MJPEG playback
+    lv_obj_t* face_canvas_ = nullptr;
+    uint8_t* face_bufs_[2] = {nullptr, nullptr};
+    volatile uint32_t face_display_idx_ = 0;
+    uint32_t face_canvas_width_ = 0;
+    uint32_t face_canvas_height_ = 0;
+    bool face_canvas_active_ = false;
 
     void InitializeLcdThemes();
     virtual bool Lock(int timeout_ms = 0) override;
@@ -53,7 +61,9 @@ public:
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
-    
+    virtual void SetFaceImage(uint8_t* rgb565, uint32_t width, uint32_t height) override;
+    void PlayGifFromFile(const char* filepath);
+
     // Set whether to hide chat messages/subtitles
     void SetHideSubtitle(bool hide);
 };

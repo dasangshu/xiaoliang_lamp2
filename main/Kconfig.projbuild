@@ -33,6 +33,17 @@ config CUSTOM_ASSETS_FILE
         The custom assets file to flash.
         It can be a local file relative to the project directory or a remote url.
 
+config MJPEG_ASSETS_PATH
+    string "MJPEG Assets Mount Path"
+    default "/sdcard"
+    help
+        The mount path where MJPEG animation files are stored.
+        Files are accessed as: <MJPEG_ASSETS_PATH>/<emotion_name>.mjpeg
+
+if FLASH_EXPRESSION_ASSETS || FLASH_DEFAULT_ASSETS || FLASH_CUSTOM_ASSETS
+
+endif
+
 choice
     prompt "Default Language"
     default LANGUAGE_ZH_CN

@@ -1,0 +1,22 @@
+model properties:
+metadata_props:
+
+
+graph coco_pose_yolo11n_pose_224_p4 {
+  return
+}
+
+
+initializers value:
+
+
+
+values info:
+
+
+
+test inputs value:
+
+
+
+test outputs value:

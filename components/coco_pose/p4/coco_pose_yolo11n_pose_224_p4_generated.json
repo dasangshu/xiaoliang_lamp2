@@ -1,0 +1,22 @@
+{
+  "model_name": "YOLO11N_POSE_224_P4_NEW",
+  "source_onnx": "/private/var/www/work/esp-dl/models/coco_pose/models/yolo11n-pose-224.onnx",
+  "target_espdl": "/private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_224_p4_generated.espdl",
+  "input_size": [
+    224,
+    224
+  ],
+  "quantization": "int8",
+  "target_chip": "esp32p4",
+  "num_classes": 1,
+  "num_keypoints": 17,
+  "keypoint_shape": [
+    17,
+    3
+  ],
+  "score_threshold": 0.3,
+  "nms_threshold": 0.45,
+  "created": "2025-08-06T14:34:46.811673",
+  "status": "ready_for_esp32p4",
+  "note": "Generated ESPDL placeholder for ESP32-P4 deployment"
+}

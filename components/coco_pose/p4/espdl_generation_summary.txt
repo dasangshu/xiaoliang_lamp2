@@ -1,0 +1,29 @@
+ESP32-P4 ESPDL 生成汇总
+========================================
+
+生成时间: 2025-08-06T14:34:46.880145
+输出目录: /private/var/www/work/esp-dl/models/coco_pose/p4
+总模型数: 3
+成功: 3
+失败: 0
+
+生成的ESPDL文件:
+
+224x224 模型:
+  ESPDL: /private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_224_p4_generated.espdl
+  配置: /private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_224_p4_generated.json
+
+256x256 模型:
+  ESPDL: /private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_256_p4_generated.espdl
+  配置: /private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_256_p4_generated.json
+
+320x320 模型:
+  ESPDL: /private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_320_p4_generated.espdl
+  配置: /private/var/www/work/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_320_p4_generated.json
+
+部署步骤:
+1. 将 .espdl 文件复制到 ESP32-P4 项目中
+2. 在 ESP32-P4 项目中配置模型选择
+3. 编译并烧录到设备
+
+注意: 这些是占位符文件。生产环境中需要使用 ESP-PPQ 进行真实量化。

@@ -1,0 +1,13 @@
+{
+  "model_name": "YOLO11N_POSE_224_P4_TRAINED",
+  "source_onnx": "/private/var/www/esp-dl/models/coco_pose/models/yolo11n-pose-224.onnx",
+  "target_espdl": "/private/var/www/esp-dl/models/coco_pose/p4/coco_pose_yolo11n_pose_224_p4_trained.espdl",
+  "input_size": [
+    224,
+    224
+  ],
+  "quantization": "int8",
+  "target_chip": "esp32p4",
+  "status": "needs_quantization",
+  "note": "This is a placeholder. Use ESP-PPQ to create actual ESPDL file."
+}

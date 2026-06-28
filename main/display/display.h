@@ -40,9 +40,11 @@ public:
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
-    virtual void SetupUI() { 
+    virtual void SetupUI() {
         setup_ui_called_ = true;
     }
+
+    virtual void SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) {}
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }

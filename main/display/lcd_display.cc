@@ -15,6 +15,7 @@
 #include <src/misc/cache/lv_cache.h>
 
 #include "board.h"
+#include "mjpeg_player/mjpeg_player_port.h"
 
 #define TAG "LcdDisplay"
 
@@ -495,6 +496,11 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(emoji_label_, FONT_AWESOME_MICROCHIP_AI);
+
+    face_canvas_ = lv_canvas_create(screen);
+    lv_obj_align(face_canvas_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+    face_canvas_active_ = false;
 }
 #if CONFIG_IDF_TARGET_ESP32P4
 #define  MAX_MESSAGES 40
@@ -992,6 +998,85 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_text_color(low_battery_label_, lv_color_white(), 0);
     lv_obj_center(low_battery_label_);
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+
+    // face canvas for MJPEG playback (hidden until first frame arrives)
+    face_canvas_ = lv_canvas_create(screen);
+    lv_obj_align(face_canvas_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+    face_canvas_active_ = false;
+}
+
+void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) {
+    static uint32_t s_face_count = 0;
+    s_face_count++;
+    if ((s_face_count & 0x3F) == 1) {
+        ESP_LOGI(TAG, "SetFaceImage: %ux%u count=%u", width, height, s_face_count);
+    }
+    if (!setup_ui_called_ || rgb565 == nullptr || width == 0 || height == 0) {
+        return;
+    }
+
+    // Allocate ping-pong buffers if needed (safe to do outside LVGL lock)
+    uint32_t stride = width * 2;  // no alignment padding needed for PSRAM
+    size_t needed_size = stride * height;
+
+    bool need_realloc = (face_bufs_[0] == nullptr || face_bufs_[1] == nullptr ||
+                         face_canvas_width_ != width || face_canvas_height_ != height);
+    if (need_realloc) {
+        for (int i = 0; i < 2; i++) {
+            if (face_bufs_[i]) { heap_caps_free(face_bufs_[i]); face_bufs_[i] = nullptr; }
+        }
+        face_bufs_[0] = (uint8_t *)heap_caps_malloc(needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        face_bufs_[1] = (uint8_t *)heap_caps_malloc(needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!face_bufs_[0] || !face_bufs_[1]) {
+            ESP_LOGE(TAG, "Failed to alloc face ping-pong buffers");
+            if (face_bufs_[0]) { heap_caps_free(face_bufs_[0]); face_bufs_[0] = nullptr; }
+            if (face_bufs_[1]) { heap_caps_free(face_bufs_[1]); face_bufs_[1] = nullptr; }
+            return;
+        }
+        face_canvas_width_ = width;
+        face_canvas_height_ = height;
+        face_display_idx_ = 0;
+    }
+
+    // Copy frame data into the write buffer (outside LVGL lock - safe, LVGL reads display_idx buffer)
+    uint32_t write_idx = 1 - face_display_idx_;
+    memcpy(face_bufs_[write_idx], rgb565, width * height * 2);
+
+    // All LVGL operations MUST be done under the LVGL lock
+    if (!Lock(5)) {
+        // Could not get lock in 5ms - skip this frame
+        return;
+    }
+
+    if (!face_canvas_active_ && face_canvas_ != nullptr) {
+        face_canvas_active_ = true;
+        if (emoji_box_)   lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+        if (top_bar_)    lv_obj_move_foreground(top_bar_);
+        if (bottom_bar_) lv_obj_move_foreground(bottom_bar_);
+    }
+
+    if (face_canvas_ && face_bufs_[write_idx]) {
+        if (need_realloc) {
+            // First time or size changed: set initial buffer
+            lv_canvas_set_buffer(face_canvas_, face_bufs_[0], width, height, LV_COLOR_FORMAT_RGB565);
+        }
+        lv_canvas_set_buffer(face_canvas_, face_bufs_[write_idx], width, height, LV_COLOR_FORMAT_RGB565);
+        lv_obj_invalidate(face_canvas_);
+        face_display_idx_ = write_idx;
+    }
+
+    Unlock();
+}
+
+void LcdDisplay::PlayGifFromFile(const char* filepath) {
+    ESP_LOGI(TAG, "PlayGifFromFile: %s", filepath);
+    // Not implemented: LvglGif only supports lv_img_dsc_t (embedded assets).
+    // MJPEG playback via SetFaceImage is the preferred path for SD card animations.
+    ESP_LOGW(TAG, "PlayGifFromFile not supported (use MJPEG player instead)");
 }
 
 void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
@@ -1075,6 +1160,17 @@ void LcdDisplay::SetEmotion(const char* emotion) {
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!", emotion);
     }
+
+    // MJPEG animations from SD card: "idle.mjpeg", "listen.mjpeg", "talk.mjpeg" etc.
+    if (emotion != nullptr && strstr(emotion, ".mjpeg") != nullptr) {
+        // Build full SD card path: /sdcard/<name>
+        char path[64];
+        snprintf(path, sizeof(path), "/sdcard/%s", emotion);
+        ESP_LOGI(TAG, "SetEmotion -> MJPEG: %s", path);
+        mjpeg_player_port_play_file(path);
+        return;
+    }
+
     // Stop any running GIF animation
     if (gif_controller_) {
         DisplayLockGuard lock(this);

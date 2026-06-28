@@ -83,6 +83,12 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.6.0
+  esp-dl:
+    dependencies: []
+    source:
+      path: /Users/swf/www/xiaoliang/xiaozhi-esp32-kevin/components/esp-dl
+      type: local
+    version: 3.1.4
   espressif/adc_battery_estimation:
     component_hash: b915167c87ed5a84b13d680bd011c2ed9a15121f1e247c6903141b9f138f3606
     dependencies:
@@ -1109,6 +1115,7 @@ direct_dependencies:
 - espressif/adc_battery_estimation
 - espressif/adc_mic
 - espressif/button
+- espressif/esp-dl
 - espressif/esp-sr
 - espressif/esp32_p4_function_ev_board
 - espressif/esp_audio_codec
@@ -1153,6 +1160,6 @@ direct_dependencies:
 - waveshare/esp_lcd_sh8601
 - waveshare/esp_lcd_st7703
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: aaace15d4ac0b8be30d755ca83620610f7baec09281426e4e0849383d9ca6eef
+manifest_hash: 1acd01ac46d36406f552fd026663e2713d1d363cfa8da8283c107e8510b4b81d
 target: esp32p4
 version: 2.0.0

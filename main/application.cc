@@ -9,6 +9,8 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "mjpeg_player/mjpeg_player_port.h"
+#include "boards/common/esp_video.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -47,6 +49,7 @@ Application::Application() {
 }
 
 Application::~Application() {
+    mjpeg_player_port_deinit();
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
@@ -61,6 +64,16 @@ bool Application::SetDeviceState(DeviceState state) {
 void Application::Initialize() {
     auto& board = Board::GetInstance();
     SetDeviceState(kDeviceStateStarting);
+
+    // Initialize MJPEG player for face animation playback
+    mjpeg_player_port_config_t mjpeg_config = {
+        .buffer_size = 0,  // use defaults
+        .core_id = 0,      // pin to core 0; LVGL/audio/AFE run on core 1 — avoids CPU contention
+        .use_psram = true,
+        .task_priority = 2,    // below AFE(5+), LVGL(4), audio(3) — yields CPU freely via vTaskDelay
+        .target_fps = 25       // MJPEG source is 25fps @ 480x800
+    };
+    mjpeg_player_port_init(&mjpeg_config);
 
     // Setup the display
     auto display = board.GetDisplay();
@@ -654,7 +667,7 @@ void Application::DismissAlert() {
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("neutral");
+        display->SetEmotion("idle.mjpeg");
         display->SetChatMessage("system", "");
     }
 }
@@ -866,18 +879,20 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
-            display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+            display->SetEmotion("idle.mjpeg"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            StartPostureDetection();
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+            StopPostureDetection();
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
-            display->SetEmotion("neutral");
+            display->SetEmotion("listen.mjpeg");
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -908,6 +923,7 @@ void Application::HandleStateChangedEvent() {
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
+            display->SetEmotion("talk.mjpeg");
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -1114,6 +1130,64 @@ void Application::ResetProtocol() {
         }
         // Reset protocol
         protocol_.reset();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// 坐姿检测集成
+// ---------------------------------------------------------------------------
+
+void Application::StartPostureDetection() {
+    auto camera = Board::GetInstance().GetCamera();
+    if (!camera) return;
+
+    auto* esp_video = dynamic_cast<EspVideo*>(camera);
+    if (!esp_video) return;
+
+    if (!posture_detector_) {
+        posture_detector_ = std::make_unique<PostureDetector>();
+    }
+
+    if (posture_detector_->IsRunning()) return;
+
+    posture_detector_->Start(esp_video, [this](const posture_result_t& result) {
+        OnPostureResult(result);
+    });
+    ESP_LOGI("Application", "坐姿检测已启动");
+}
+
+void Application::StopPostureDetection() {
+    if (posture_detector_) {
+        posture_detector_->Stop();
+        ESP_LOGI("Application", "坐姿检测已停止");
+    }
+}
+
+void Application::OnPostureResult(const posture_result_t& result) {
+    if (!result.detected || result.posture_type == POSTURE_NORMAL || result.posture_type == POSTURE_UNKNOWN)
+        return;
+
+    // 限制警告频率
+    TickType_t now = xTaskGetTickCount();
+    if (now - posture_last_alert_tick_ < pdMS_TO_TICKS(POSTURE_ALERT_INTERVAL_MS))
+        return;
+    posture_last_alert_tick_ = now;
+
+    ESP_LOGI("Application", "坐姿异常: %s", result.status_text);
+
+    // 切到主任务上下文再弹提示
+    Schedule([this, posture_type = result.posture_type]() {
+        if (GetDeviceState() != kDeviceStateIdle) return;
+        const char* msg = POSTURE_NAMES[posture_type];
+        Alert(Lang::Strings::WARNING, msg, "bye.mjpeg", Lang::Sounds::OGG_EXCLAMATION);
+
+        // 3 秒后自动关闭提示
+        xTaskCreate([](void* p) {
+            Application* app = (Application*)p;
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            app->Schedule([app]() { app->DismissAlert(); });
+            vTaskDelete(NULL);
+        }, "posture_alert", 2048, this, 1, nullptr);
     });
 }
 

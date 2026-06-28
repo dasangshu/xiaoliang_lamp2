@@ -16,6 +16,7 @@
 #include "audio_service.h"
 #include "device_state.h"
 #include "device_state_machine.h"
+#include "posture/posture_detector.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -169,6 +170,14 @@ private:
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
+
+    // 坐姿检测
+    std::unique_ptr<PostureDetector> posture_detector_;
+    TickType_t posture_last_alert_tick_ = 0;
+    static constexpr uint32_t POSTURE_ALERT_INTERVAL_MS = 30000;  // 两次警告最短间隔30s
+    void StartPostureDetection();
+    void StopPostureDetection();
+    void OnPostureResult(const posture_result_t& result);
 };
 
 
