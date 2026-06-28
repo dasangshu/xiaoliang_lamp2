@@ -58,7 +58,11 @@ Application::~Application() {
 }
 
 bool Application::SetDeviceState(DeviceState state) {
-    return state_machine_.TransitionTo(state);
+    bool ok = state_machine_.TransitionTo(state);
+    if (ok && state == kDeviceStateIdle) {
+        idle_entered_tick_ = xTaskGetTickCount();
+    }
+    return ok;
 }
 
 void Application::Initialize() {
@@ -796,6 +800,15 @@ void Application::HandleWakeWordDetectedEvent() {
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
     if (state == kDeviceStateIdle) {
+        // 刚进入 idle 的前几秒内忽略唤醒词，防止调整摄像头等物理振动误触发
+        TickType_t now = xTaskGetTickCount();
+        if ((now - idle_entered_tick_) * portTICK_PERIOD_MS < IDLE_WAKEWORD_DEBOUNCE_MS) {
+            ESP_LOGW(TAG, "Wake word suppressed (idle debounce %lu ms)",
+                     (unsigned long)((now - idle_entered_tick_) * portTICK_PERIOD_MS));
+            audio_service_.EnableWakeWordDetection(true);
+            return;
+        }
+
         audio_service_.EncodeWakeWord();
         auto wake_word = audio_service_.GetLastWakeWord();
 

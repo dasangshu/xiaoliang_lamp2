@@ -175,6 +175,10 @@ private:
     std::unique_ptr<PostureDetector> posture_detector_;
     TickType_t posture_last_alert_tick_ = 0;
     static constexpr uint32_t POSTURE_ALERT_INTERVAL_MS = 30000;  // 两次警告最短间隔30s
+
+    // 进入 idle 的时刻，用于抑制刚切换时的振动误唤醒
+    TickType_t idle_entered_tick_ = 0;
+    static constexpr uint32_t IDLE_WAKEWORD_DEBOUNCE_MS = 3000;  // idle 后3秒内忽略唤醒词
     void StartPostureDetection();
     void StopPostureDetection();
     void OnPostureResult(const posture_result_t& result);
