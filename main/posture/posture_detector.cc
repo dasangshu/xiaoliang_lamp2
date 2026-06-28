@@ -180,9 +180,9 @@ bool PostureDetector::Start(void* camera, PostureCallback cb) {
         xSemaphoreGive(model_sem_);
     } else if (!loader_running_) {
         loader_running_ = true;
-        // 任务栈分配到 PSRAM，避免占用宝贵的内部 SRAM
-        xTaskCreateWithCaps(ModelLoaderTask, "pose_loader", 16384, this, 1, &loader_task_,
-                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        // ModelLoaderTask 必须用内部 SRAM 栈：SDMMC DMA 不能访问 PSRAM，
+        // FbsLoader 在栈上分配的读取缓冲区必须在 DMA 可达的内存里
+        xTaskCreate(ModelLoaderTask, "pose_loader", 16384, this, 1, &loader_task_);
     }
     // 若 loader_running_==true 且 model_loaded_==false：上次的加载任务还在跑，
     // 它完成时会 xSemaphoreGive(self->model_sem_)，检测任务自然会收到
