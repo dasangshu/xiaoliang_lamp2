@@ -12,12 +12,34 @@
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
 #include <cstring>
+#include <sys/stat.h>
 #include <src/misc/cache/lv_cache.h>
 
 #include "board.h"
 #include "mjpeg_player/mjpeg_player_port.h"
 
 #define TAG "LcdDisplay"
+
+namespace {
+bool FileExists(const char* path) {
+    struct stat st;
+    return path != nullptr && stat(path, &st) == 0;
+}
+
+bool ResolveMjpegEmotionPath(const char* emotion, char* path, size_t path_size) {
+    if (emotion == nullptr || emotion[0] == '\0' || path == nullptr || path_size == 0) {
+        return false;
+    }
+
+    if (strstr(emotion, ".mjpeg") != nullptr) {
+        snprintf(path, path_size, "/sdcard/%s", emotion);
+        return true;
+    }
+
+    snprintf(path, path_size, "/sdcard/%s.mjpeg", emotion);
+    return FileExists(path);
+}
+}  // namespace
 
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 LV_FONT_DECLARE(BUILTIN_ICON_FONT);
@@ -490,12 +512,12 @@ void LcdDisplay::SetupUI() {
     emoji_image_ = lv_img_create(screen);
     lv_obj_align(emoji_image_, LV_ALIGN_TOP_MID, 0, text_font->line_height + lvgl_theme->spacing(8));
 
-    // Display AI logo while booting
     emoji_label_ = lv_label_create(screen);
     lv_obj_center(emoji_label_);
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
-    lv_label_set_text(emoji_label_, FONT_AWESOME_MICROCHIP_AI);
+    lv_label_set_text(emoji_label_, "");
+    lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
 
     face_canvas_ = lv_canvas_create(screen);
     lv_obj_align(face_canvas_, LV_ALIGN_CENTER, 0, 0);
@@ -559,7 +581,7 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
             }
         }
     } else {
-        // Hide the centered AI logo
+        // Hide the centered fallback emotion label while chat content is visible.
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -799,9 +821,9 @@ void LcdDisplay::ClearChatMessages() {
     // Reset chat_message_label_ as it has been deleted
     chat_message_label_ = nullptr;
     
-    // Show the centered AI logo (emoji_label_) again
+    // Keep the fallback emotion label hidden; MJPEG canvas is the primary face output.
     if (emoji_label_ != nullptr) {
-        lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
     
     ESP_LOGI(TAG, "Chat messages cleared");
@@ -846,7 +868,8 @@ void LcdDisplay::SetupUI() {
     emoji_label_ = lv_label_create(emoji_box_);
     lv_obj_set_style_text_font(emoji_label_, large_icon_font, 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
-    lv_label_set_text(emoji_label_, FONT_AWESOME_MICROCHIP_AI);
+    lv_label_set_text(emoji_label_, "");
+    lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
 
     emoji_image_ = lv_img_create(emoji_box_);
     lv_obj_center(emoji_image_);
@@ -1162,8 +1185,10 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!", emotion);
     }
 
-    // MJPEG animations from SD card: "idle.mjpeg", "listen.mjpeg", "talk.mjpeg" etc.
-    if (emotion != nullptr && strstr(emotion, ".mjpeg") != nullptr) {
+    // MJPEG animations from SD card. Bare emotion names such as "happy" first
+    // try /sdcard/happy.mjpeg before falling back to built-in emoji/icons.
+    char mjpeg_path[64];
+    if (ResolveMjpegEmotionPath(emotion, mjpeg_path, sizeof(mjpeg_path))) {
         {
             DisplayLockGuard lock(this);
             if (gif_controller_) {
@@ -1188,11 +1213,8 @@ void LcdDisplay::SetEmotion(const char* emotion) {
             face_canvas_active_ = true;
         }
 
-        // Build full SD card path: /sdcard/<name>
-        char path[64];
-        snprintf(path, sizeof(path), "/sdcard/%s", emotion);
-        ESP_LOGI(TAG, "SetEmotion -> MJPEG: %s", path);
-        mjpeg_player_port_play_file(path);
+        ESP_LOGI(TAG, "SetEmotion -> MJPEG: %s", mjpeg_path);
+        mjpeg_player_port_play_file(mjpeg_path);
         return;
     }
 

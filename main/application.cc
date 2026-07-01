@@ -82,6 +82,7 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
+    display->SetEmotion("loading.mjpeg");
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
@@ -417,7 +418,7 @@ void Application::CheckAssetsVersion() {
     // Apply assets
     assets.Apply();
     display->SetChatMessage("system", "");
-    display->SetEmotion("microchip_ai");
+    display->SetEmotion("loading.mjpeg");
 }
 
 void Application::CheckNewVersion() {
@@ -923,11 +924,15 @@ void Application::HandleStateChangedEvent() {
     
     switch (new_state) {
         case kDeviceStateUnknown:
-        case kDeviceStateStarting:
         case kDeviceStateActivating:
         case kDeviceStateUpgrading:
         case kDeviceStateAudioTesting:
         case kDeviceStateFatalError:
+            posture_start_pending_ = false;
+            StopPostureDetection();
+            break;
+        case kDeviceStateStarting:
+            display->SetEmotion("loading.mjpeg");
             posture_start_pending_ = false;
             StopPostureDetection();
             break;

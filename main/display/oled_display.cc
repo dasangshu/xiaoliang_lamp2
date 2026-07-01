@@ -258,7 +258,8 @@ void OledDisplay::SetupUI_128x64() {
 
     emotion_label_ = lv_label_create(content_left_);
     lv_obj_set_style_text_font(emotion_label_, large_icon_font, 0);
-    lv_label_set_text(emotion_label_, FONT_AWESOME_MICROCHIP_AI);
+    lv_label_set_text(emotion_label_, "");
+    lv_obj_add_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_center(emotion_label_);
     lv_obj_set_style_pad_top(emotion_label_, 8, 0);
 
@@ -325,7 +326,8 @@ void OledDisplay::SetupUI_128x32() {
 
     emotion_label_ = lv_label_create(content_);
     lv_obj_set_style_text_font(emotion_label_, large_icon_font, 0);
-    lv_label_set_text(emotion_label_, FONT_AWESOME_MICROCHIP_AI);
+    lv_label_set_text(emotion_label_, "");
+    lv_obj_add_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_center(emotion_label_);
 
     /* Right side */
@@ -390,6 +392,12 @@ void OledDisplay::SetEmotion(const char* emotion) {
     if (emotion_label_ == nullptr) {
         return;
     }
+    if (emotion != nullptr && strstr(emotion, ".mjpeg") != nullptr) {
+        lv_label_set_text(emotion_label_, "");
+        lv_obj_add_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_remove_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
     if (utf8 != nullptr) {
         lv_label_set_text(emotion_label_, utf8);
     } else {
