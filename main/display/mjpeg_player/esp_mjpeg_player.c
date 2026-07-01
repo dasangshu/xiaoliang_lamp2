@@ -15,7 +15,7 @@ esp_err_t jpeg_to_image(const uint8_t *src, size_t src_len, uint8_t **out, size_
 static const char *TAG = "mjpeg_player";
 
 typedef struct {
-    bool is_playing;
+    volatile bool is_playing;
     bool is_loop;
     TaskHandle_t task_handle;
     media_src_t file;
@@ -117,8 +117,9 @@ static void mjpeg_player_task(void *arg) {
                             vTaskDelay(frame_interval_ticks - elapsed);
                         }
                     }
+                    taskYIELD();
                     frame_start_tick = xTaskGetTickCount();
-                    break;
+                    continue;
                 }
                 pos++;
             }
@@ -144,6 +145,7 @@ static void mjpeg_player_task(void *arg) {
 
     player->is_playing = false;
     ESP_LOGI(TAG, "MJPEG player task finished (frames: %u)", frame_counter);
+    player->task_handle = NULL;
     vTaskDelete(NULL);
 }
 
@@ -238,9 +240,12 @@ esp_err_t mjpeg_player_play_file(mjpeg_player_handle_t handle, const char *filep
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (player->is_playing) {
-        mjpeg_player_stop(handle);
-        vTaskDelay(pdMS_TO_TICKS(100));
+    if (player->is_playing || player->task_handle != NULL) {
+        esp_err_t stop_ret = mjpeg_player_stop(handle);
+        if (stop_ret != ESP_OK) {
+            ESP_LOGW(TAG, "Previous playback did not stop, skip new file: %s", filepath);
+            return stop_ret;
+        }
     }
 
     if (media_src_storage_connect(&player->file, filepath) != 0) {
@@ -285,19 +290,18 @@ esp_err_t mjpeg_player_stop(mjpeg_player_handle_t handle) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (player->is_playing) {
+    if (player->is_playing || player->task_handle != NULL) {
         player->is_playing = false;
 
         if (player->task_handle) {
-            uint32_t timeout = 200;
-            while (eTaskGetState(player->task_handle) != eDeleted && timeout-- > 0) {
+            uint32_t timeout = 2000;
+            while (player->task_handle != NULL && timeout-- > 0) {
                 vTaskDelay(pdMS_TO_TICKS(1));
             }
             if (timeout == 0) {
-                ESP_LOGW(TAG, "Task did not finish in 200ms, force delete");
-                vTaskDelete(player->task_handle);
+                ESP_LOGW(TAG, "Task did not finish in 2000ms; leaving it to exit safely");
+                return ESP_ERR_TIMEOUT;
             }
-            player->task_handle = NULL;
         }
 
         media_src_storage_disconnect(&player->file);

@@ -121,6 +121,7 @@ public:
             this->register_module("LeakyRelu", LeakyRelu::deserialize);
             this->register_module("HardSigmoid", HardSigmoid::deserialize);
             this->register_module("HardSwish", HardSwish::deserialize);
+            this->register_module("Swish", LUT::deserialize);
             this->register_module("Gelu", LUT::deserialize);
             this->register_module("LUT", LUT::deserialize);
             this->register_module("Gemm", Gemm::deserialize);

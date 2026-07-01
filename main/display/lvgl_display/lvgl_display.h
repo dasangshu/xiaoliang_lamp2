@@ -41,9 +41,12 @@ protected:
     const char* battery_icon_ = nullptr;
     const char* network_icon_ = nullptr;
     bool muted_ = false;
+    char last_idle_time_text_[16] = {0};
 
     std::chrono::system_clock::time_point last_status_update_time_;
     esp_timer_handle_t notification_timer_ = nullptr;
+
+    void SetIdleClockStatus(bool force = false);
 
     friend class DisplayLockGuard;
     virtual bool Lock(int timeout_ms = 0) = 0;

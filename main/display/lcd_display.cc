@@ -1056,6 +1056,7 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
         if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
         if (top_bar_)    lv_obj_move_foreground(top_bar_);
+        if (status_bar_) lv_obj_move_foreground(status_bar_);
         if (bottom_bar_) lv_obj_move_foreground(bottom_bar_);
     }
 
@@ -1163,6 +1164,30 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 
     // MJPEG animations from SD card: "idle.mjpeg", "listen.mjpeg", "talk.mjpeg" etc.
     if (emotion != nullptr && strstr(emotion, ".mjpeg") != nullptr) {
+        {
+            DisplayLockGuard lock(this);
+            if (gif_controller_) {
+                gif_controller_->Stop();
+                gif_controller_.reset();
+            }
+            if (emoji_box_) {
+                lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (emoji_label_) {
+                lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (emoji_image_) {
+                lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (face_canvas_) {
+                lv_obj_remove_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+                if (top_bar_)    lv_obj_move_foreground(top_bar_);
+                if (status_bar_) lv_obj_move_foreground(status_bar_);
+                if (bottom_bar_) lv_obj_move_foreground(bottom_bar_);
+            }
+            face_canvas_active_ = true;
+        }
+
         // Build full SD card path: /sdcard/<name>
         char path[64];
         snprintf(path, sizeof(path), "/sdcard/%s", emotion);
@@ -1170,6 +1195,8 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         mjpeg_player_port_play_file(path);
         return;
     }
+
+    mjpeg_player_port_stop();
 
     // Stop any running GIF animation
     if (gif_controller_) {
@@ -1188,6 +1215,17 @@ void LcdDisplay::SetEmotion(const char* emotion) {
             ESP_LOGW(TAG, "SetEmotion('%s') failed: emoji_image_ is nullptr (SetupUI() was called but emoji image not created)", emotion);
         }
         return;
+    }
+
+    {
+        DisplayLockGuard lock(this);
+        if (face_canvas_) {
+            lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+            face_canvas_active_ = false;
+        }
+        if (emoji_box_) {
+            lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();

@@ -71,11 +71,11 @@ void Application::Initialize() {
 
     // Initialize MJPEG player for face animation playback
     mjpeg_player_port_config_t mjpeg_config = {
-        .buffer_size = 0,  // use defaults
-        .core_id = 0,      // pin to core 0; LVGL/audio/AFE run on core 1 — avoids CPU contention
+        .buffer_size = 300 * 1024,  // enough for larger 480x800 MJPEG JPEG frames
+        .core_id = 0,      // keep MJPEG low priority; audio_input/AEC can also run on CPU0
         .use_psram = true,
         .task_priority = 2,    // below AFE(5+), LVGL(4), audio(3) — yields CPU freely via vTaskDelay
-        .target_fps = 25       // MJPEG source is 25fps @ 480x800
+        .target_fps = 15       // smoother motion while keeping JPEG/LVGL load controlled
     };
     mjpeg_player_port_init(&mjpeg_config);
 
@@ -266,6 +266,14 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+
+            if (posture_start_pending_ && GetDeviceState() == kDeviceStateIdle) {
+                TickType_t now = xTaskGetTickCount();
+                if ((now - idle_entered_tick_) * portTICK_PERIOD_MS >= POSTURE_IDLE_DELAY_MS) {
+                    posture_start_pending_ = false;
+                    StartPostureDetection();
+                }
+            }
         
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -543,16 +551,36 @@ void Application::InitializeProtocol() {
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
                     aborted_ = false;
+                    tts_session_id_++;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
-                            SetDeviceState(kDeviceStateListening);
-                        }
+                        struct TtsDrainContext {
+                            Application* app;
+                            uint32_t session_id;
+                        };
+                        auto* ctx = new TtsDrainContext{this, tts_session_id_};
+                        xTaskCreate([](void* arg) {
+                            auto* ctx = static_cast<TtsDrainContext*>(arg);
+                            auto* app = ctx->app;
+                            uint32_t wait_session_id = ctx->session_id;
+                            delete ctx;
+                            app->audio_service_.WaitForPlaybackQueueEmpty();
+                            app->Schedule([app, wait_session_id]() {
+                                if (app->tts_session_id_ != wait_session_id ||
+                                    app->GetDeviceState() != kDeviceStateSpeaking) {
+                                    return;
+                                }
+                                if (app->listening_mode_ == kListeningModeManualStop) {
+                                    app->SetDeviceState(kDeviceStateIdle);
+                                } else {
+                                    app->SetDeviceState(kDeviceStateListening);
+                                }
+                            });
+                            vTaskDelete(NULL);
+                        }, "tts_drain", 4096, ctx, 2, nullptr);
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
@@ -575,7 +603,13 @@ void Application::InitializeProtocol() {
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
             if (cJSON_IsString(emotion)) {
-                Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
+                Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
+                    auto state = GetDeviceState();
+                    if ((state == kDeviceStateSpeaking || state == kDeviceStateListening) &&
+                        emotion_str.find(".mjpeg") == std::string::npos) {
+                        ESP_LOGI(TAG, "Ignore LLM emotion '%s' during voice MJPEG state", emotion_str.c_str());
+                        return;
+                    }
                     display->SetEmotion(emotion_str.c_str());
                 });
             }
@@ -889,23 +923,34 @@ void Application::HandleStateChangedEvent() {
     
     switch (new_state) {
         case kDeviceStateUnknown:
+        case kDeviceStateStarting:
+        case kDeviceStateActivating:
+        case kDeviceStateUpgrading:
+        case kDeviceStateAudioTesting:
+        case kDeviceStateFatalError:
+            posture_start_pending_ = false;
+            StopPostureDetection();
+            break;
         case kDeviceStateIdle:
-            display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("idle.mjpeg"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
-            StartPostureDetection();
+            display->UpdateStatusBar(true);
+            posture_start_pending_ = true;
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+            posture_start_pending_ = false;
             StopPostureDetection();
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("listen.mjpeg");
+            posture_start_pending_ = false;
+            StopPostureDetection();
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -937,6 +982,8 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
             display->SetEmotion("talk.mjpeg");
+            posture_start_pending_ = false;
+            StopPostureDetection();
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
@@ -946,6 +993,8 @@ void Application::HandleStateChangedEvent() {
             audio_service_.ResetDecoder();
             break;
         case kDeviceStateWifiConfiguring:
+            posture_start_pending_ = false;
+            StopPostureDetection();
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(false);
             break;
@@ -1203,4 +1252,3 @@ void Application::OnPostureResult(const posture_result_t& result) {
         }, "posture_alert", 2048, this, 1, nullptr);
     });
 }
-

@@ -20,9 +20,14 @@ LvglDisplay::LvglDisplay() {
     esp_timer_create_args_t notification_timer_args = {
         .callback = [](void *arg) {
             LvglDisplay *display = static_cast<LvglDisplay*>(arg);
-            DisplayLockGuard lock(display);
-            lv_obj_add_flag(display->notification_label_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(display->status_label_, LV_OBJ_FLAG_HIDDEN);
+            {
+                DisplayLockGuard lock(display);
+                lv_obj_add_flag(display->notification_label_, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(display->status_label_, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+                display->SetIdleClockStatus(true);
+            }
         },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
@@ -110,6 +115,39 @@ void LvglDisplay::ShowNotification(const char* notification, int duration_ms) {
     ESP_ERROR_CHECK(esp_timer_start_once(notification_timer_, duration_ms * 1000));
 }
 
+void LvglDisplay::SetIdleClockStatus(bool force) {
+    if (status_label_ == nullptr || notification_label_ == nullptr) {
+        return;
+    }
+
+    char time_str[16] = {0};
+    time_t now = time(NULL);
+    struct tm* tm = localtime(&now);
+    if (tm != nullptr && tm->tm_year >= 2025 - 1900) {
+        strftime(time_str, sizeof(time_str), "%H:%M", tm);
+    } else {
+        int64_t uptime_sec = esp_timer_get_time() / 1000000;
+        snprintf(time_str, sizeof(time_str), "%02lld:%02lld",
+                 (long long)((uptime_sec / 60) % 100),
+                 (long long)(uptime_sec % 60));
+    }
+
+    if (!force &&
+        strcmp(last_idle_time_text_, time_str) == 0 &&
+        !lv_obj_has_flag(status_label_, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+
+    strncpy(last_idle_time_text_, time_str, sizeof(last_idle_time_text_) - 1);
+    last_idle_time_text_[sizeof(last_idle_time_text_) - 1] = '\0';
+
+    DisplayLockGuard lock(this);
+    if (lv_obj_has_flag(notification_label_, LV_OBJ_FLAG_HIDDEN)) {
+        lv_label_set_text(status_label_, time_str);
+        lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void LvglDisplay::UpdateStatusBar(bool update_all) {
     auto& app = Application::GetInstance();
     auto& board = Board::GetInstance();
@@ -132,21 +170,8 @@ void LvglDisplay::UpdateStatusBar(bool update_all) {
         }
     }
 
-    // Update time
     if (app.GetDeviceState() == kDeviceStateIdle) {
-        if (last_status_update_time_ + std::chrono::seconds(10) < std::chrono::system_clock::now()) {
-            // Set status to clock "HH:MM"
-            time_t now = time(NULL);
-            struct tm* tm = localtime(&now);
-            // Check if the we have already set the time
-            if (tm->tm_year >= 2025 - 1900) {
-                char time_str[16];
-                strftime(time_str, sizeof(time_str), "%H:%M", tm);
-                SetStatus(time_str);
-            } else {
-                ESP_LOGW(TAG, "System time is not set, tm_year: %d", tm->tm_year);
-            }
-        }
+        SetIdleClockStatus(update_all);
     }
 
     esp_pm_lock_acquire(pm_lock_);

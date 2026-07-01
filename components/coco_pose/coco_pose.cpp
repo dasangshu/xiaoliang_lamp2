@@ -57,6 +57,14 @@ Yolo11nPose::Yolo11nPose(const char *model_name, const char *full_path)
     m_model->minimize();
     ESP_LOGI("coco_pose", "m_model->minimize() completed");
 
+    if (m_model->get_inputs().size() != 1) {
+        ESP_LOGE("coco_pose", "Model is not ready: expected 1 input, got %u",
+                 static_cast<unsigned>(m_model->get_inputs().size()));
+        delete m_model;
+        m_model = nullptr;
+        throw std::runtime_error("coco_pose: invalid model inputs");
+    }
+
 #if CONFIG_IDF_TARGET_ESP32P4
     ESP_LOGI("coco_pose", "Creating ImagePreprocessor for ESP32P4...");
     m_image_preprocessor =

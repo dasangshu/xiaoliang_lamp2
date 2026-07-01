@@ -81,7 +81,7 @@ std::vector<int> get_slice_shape(const std::vector<int> &shape,
         }
         int start_i = start[i];
         int end_i = end[i];
-        int step_i = step[i];
+        int step_i = step.empty() ? 1 : step[i];
 
         if (step_i < 0) {
             start_i = -start_i - 1;

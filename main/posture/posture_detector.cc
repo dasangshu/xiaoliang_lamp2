@@ -204,11 +204,12 @@ void PostureDetector::Stop() {
     // 注意：不重置 loader_running_，loader 任务完成时会自己清除
     // 注意：不重置 model_loading_，loader 任务完成时会自己清除
 
-    // 给任务最多 300ms 自行退出
-    vTaskDelay(pdMS_TO_TICKS(300));
+    // 让 camera/detect 任务自行退出。外部 vTaskDelete 可能命中刚退出的任务句柄，
+    // 在状态切换时导致 FreeRTOS 链表访问异常。
+    for (int i = 0; i < 20 && (camera_task_ || detect_task_); i++) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 
-    if (camera_task_) { vTaskDelete(camera_task_); camera_task_ = nullptr; }
-    if (detect_task_) { vTaskDelete(detect_task_); detect_task_ = nullptr; }
     loader_task_ = nullptr;  // loader 自行退出，不强杀
 
     if (detect_queue_) { vQueueDelete(detect_queue_); detect_queue_ = nullptr; }
@@ -327,8 +328,7 @@ void PostureDetector::CameraTask(void* arg) {
     while (true) {
 
         if (!self->running_) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
+            break;
         }
 
         if (!cam->Capture()) {
@@ -389,6 +389,7 @@ void PostureDetector::CameraTask(void* arg) {
         vTaskDelay(pdMS_TO_TICKS(30));
     }
 
+    self->camera_task_ = nullptr;
     vTaskDelete(NULL);
 }
 
@@ -415,12 +416,14 @@ void PostureDetector::DetectTask(void* arg) {
     while (true) {
 
         if (!self->running_) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
+            break;
         }
 
-        if (xQueueReceive(self->detect_queue_, &slot, pdMS_TO_TICKS(200)) != pdTRUE || !slot.valid)
+        if (!self->detect_queue_ ||
+            xQueueReceive(self->detect_queue_, &slot, pdMS_TO_TICKS(200)) != pdTRUE ||
+            !slot.valid) {
             continue;
+        }
 
         // 内存安全检查
         if (esp_get_free_heap_size() < 100000) {
@@ -467,5 +470,6 @@ void PostureDetector::DetectTask(void* arg) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
+    self->detect_task_ = nullptr;
     vTaskDelete(NULL);
 }

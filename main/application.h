@@ -143,6 +143,7 @@ private:
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
+    uint32_t tts_session_id_ = 0;
 
 
     // Event handlers
@@ -179,6 +180,8 @@ private:
     // 进入 idle 的时刻，用于抑制刚切换时的振动误唤醒
     TickType_t idle_entered_tick_ = 0;
     static constexpr uint32_t IDLE_WAKEWORD_DEBOUNCE_MS = 3000;  // idle 后3秒内忽略唤醒词
+    bool posture_start_pending_ = false;
+    static constexpr uint32_t POSTURE_IDLE_DELAY_MS = 10000;  // idle 持续10秒后再启动坐姿检测
     void StartPostureDetection();
     void StopPostureDetection();
     void OnPostureResult(const posture_result_t& result);
