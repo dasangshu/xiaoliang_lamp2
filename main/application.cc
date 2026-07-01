@@ -72,10 +72,10 @@ void Application::Initialize() {
     // Initialize MJPEG player for face animation playback
     mjpeg_player_port_config_t mjpeg_config = {
         .buffer_size = 300 * 1024,  // enough for larger 480x800 MJPEG JPEG frames
-        .core_id = 0,      // keep MJPEG low priority; audio_input/AEC can also run on CPU0
+        .core_id = -1,     // let the scheduler place MJPEG; do not pin heavy JPEG decode to CPU0
         .use_psram = true,
         .task_priority = 2,    // below AFE(5+), LVGL(4), audio(3) — yields CPU freely via vTaskDelay
-        .target_fps = 15       // smoother motion while keeping JPEG/LVGL load controlled
+        .target_fps = 8        // 480x800 JPEG decode is heavy on P4; keep CPU0/LVGL watchdog healthy
     };
     mjpeg_player_port_init(&mjpeg_config);
 
@@ -1212,6 +1212,10 @@ void Application::StartPostureDetection() {
 
     if (posture_detector_->IsRunning()) return;
 
+    // Keep posture detection invisible: stop the idle MJPEG decoder to free CPU/PSRAM,
+    // but do not change the visible emotion/status or show camera frames.
+    mjpeg_player_port_stop();
+
     posture_detector_->Start(esp_video, [this](const posture_result_t& result) {
         OnPostureResult(result);
     });
@@ -1240,14 +1244,26 @@ void Application::OnPostureResult(const posture_result_t& result) {
     // 切到主任务上下文再弹提示
     Schedule([this, posture_type = result.posture_type]() {
         if (GetDeviceState() != kDeviceStateIdle) return;
+        posture_start_pending_ = false;
+        StopPostureDetection();
+
         const char* msg = POSTURE_NAMES[posture_type];
-        Alert(Lang::Strings::WARNING, msg, "bye.mjpeg", Lang::Sounds::OGG_EXCLAMATION);
+        const auto& sound = (posture_type == POSTURE_SLOUCHING)
+            ? Lang::Sounds::OGG_POSE2
+            : Lang::Sounds::OGG_EXCLAMATION;
+        Alert(Lang::Strings::WARNING, msg, "bye.mjpeg", sound);
 
         // 3 秒后自动关闭提示
         xTaskCreate([](void* p) {
             Application* app = (Application*)p;
             vTaskDelay(pdMS_TO_TICKS(3000));
-            app->Schedule([app]() { app->DismissAlert(); });
+            app->Schedule([app]() {
+                app->DismissAlert();
+                if (app->GetDeviceState() == kDeviceStateIdle) {
+                    app->idle_entered_tick_ = xTaskGetTickCount();
+                    app->posture_start_pending_ = true;
+                }
+            });
             vTaskDelete(NULL);
         }, "posture_alert", 2048, this, 1, nullptr);
     });

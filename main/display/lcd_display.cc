@@ -1016,7 +1016,12 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
         return;
     }
 
-    // Allocate ping-pong buffers if needed (safe to do outside LVGL lock)
+    // If LVGL is busy, drop the frame before copying 480x800x2 bytes through PSRAM.
+    if (!Lock(0)) {
+        return;
+    }
+
+    // Allocate ping-pong buffers if needed.
     uint32_t stride = width * 2;  // no alignment padding needed for PSRAM
     size_t needed_size = stride * height;
 
@@ -1032,6 +1037,7 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
             ESP_LOGE(TAG, "Failed to alloc face ping-pong buffers");
             if (face_bufs_[0]) { heap_caps_free(face_bufs_[0]); face_bufs_[0] = nullptr; }
             if (face_bufs_[1]) { heap_caps_free(face_bufs_[1]); face_bufs_[1] = nullptr; }
+            Unlock();
             return;
         }
         face_canvas_width_ = width;
@@ -1039,15 +1045,9 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
         face_display_idx_ = 0;
     }
 
-    // Copy frame data into the write buffer (outside LVGL lock - safe, LVGL reads display_idx buffer)
+    // Copy frame data into the write buffer while LVGL is locked so the canvas never reads a half-written buffer.
     uint32_t write_idx = 1 - face_display_idx_;
     memcpy(face_bufs_[write_idx], rgb565, width * height * 2);
-
-    // All LVGL operations MUST be done under the LVGL lock
-    if (!Lock(5)) {
-        // Could not get lock in 5ms - skip this frame
-        return;
-    }
 
     if (!face_canvas_active_ && face_canvas_ != nullptr) {
         face_canvas_active_ = true;

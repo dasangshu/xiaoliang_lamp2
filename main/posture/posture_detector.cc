@@ -53,7 +53,7 @@ static void yuyv_to_rgb888(const uint8_t* src, uint8_t* dst, int w, int h) {
 // ---------------------------------------------------------------------------
 // 坐姿分析（关键点 → posture_type_t）
 // ---------------------------------------------------------------------------
-static posture_type_t analyze_posture(const std::vector<int>& kp) {
+static posture_type_t analyze_posture(const std::vector<int>& kp, const std::vector<int>& box) {
     auto get = [&](int idx) -> std::pair<float,float> {
         if (idx * 2 + 1 < (int)kp.size())
             return {(float)kp[idx*2], (float)kp[idx*2+1]};
@@ -61,7 +61,7 @@ static posture_type_t analyze_posture(const std::vector<int>& kp) {
     };
     auto valid = [](std::pair<float,float> p){ return p.first>0 && p.second>0; };
 
-    const int NOSE=0, LEFT_EYE=1, RIGHT_EYE=2;
+    const int NOSE=0, LEFT_EYE=1, RIGHT_EYE=2, LEFT_EAR=3, RIGHT_EAR=4;
     const int LEFT_SHOULDER=5, RIGHT_SHOULDER=6;
     const int LEFT_WRIST=9, RIGHT_WRIST=10;
     const int LEFT_HIP=11, RIGHT_HIP=12;
@@ -69,6 +69,8 @@ static posture_type_t analyze_posture(const std::vector<int>& kp) {
     auto nose         = get(NOSE);
     auto left_eye     = get(LEFT_EYE);
     auto right_eye    = get(RIGHT_EYE);
+    auto left_ear     = get(LEFT_EAR);
+    auto right_ear    = get(RIGHT_EAR);
     auto left_sh      = get(LEFT_SHOULDER);
     auto right_sh     = get(RIGHT_SHOULDER);
     auto left_wr      = get(LEFT_WRIST);
@@ -76,14 +78,29 @@ static posture_type_t analyze_posture(const std::vector<int>& kp) {
     auto left_hip     = get(LEFT_HIP);
     auto right_hip    = get(RIGHT_HIP);
 
-    if (!valid(nose) || (!valid(left_sh) && !valid(right_sh)))
+    if (!valid(left_sh) && !valid(right_sh))
         return POSTURE_UNKNOWN;
 
-    // 头部中心
-    std::pair<float,float> head = nose;
-    if (valid(left_eye) && valid(right_eye)) {
-        head.first  = (left_eye.first  + right_eye.first  + nose.first)  / 3.f;
-        head.second = (left_eye.second + right_eye.second + nose.second) / 3.f;
+    const float box_left = box.size() >= 4 ? (float)box[0] : 0.f;
+    const float box_top = box.size() >= 4 ? (float)box[1] : 0.f;
+    const float box_right = box.size() >= 4 ? (float)box[2] : 0.f;
+    const float box_bottom = box.size() >= 4 ? (float)box[3] : 0.f;
+    const float box_w = fmaxf(1.f, box_right - box_left);
+    const float box_h = fmaxf(1.f, box_bottom - box_top);
+
+    // 头部中心：低头/趴桌时鼻子经常置信度低被置 0，尽量用眼睛/耳朵兜底。
+    std::pair<float,float> head = {0,0};
+    int head_cnt = 0;
+    for (auto p : {nose, left_eye, right_eye, left_ear, right_ear}) {
+        if (valid(p)) {
+            head.first += p.first;
+            head.second += p.second;
+            head_cnt++;
+        }
+    }
+    if (head_cnt > 0) {
+        head.first /= head_cnt;
+        head.second /= head_cnt;
     }
 
     // 肩膀中心
@@ -100,11 +117,16 @@ static posture_type_t analyze_posture(const std::vector<int>& kp) {
     if (valid(right_hip)) { hip.first += right_hip.first; hip.second += right_hip.second; hip_cnt++; }
     if (hip_cnt) { hip.first /= hip_cnt; hip.second /= hip_cnt; }
 
-    float body_h = (hip_cnt > 0) ? fabsf(sh_center.second - hip.second) : 100.f;
-    if (body_h < 50.f) body_h = 100.f;
+    float shoulder_w = (valid(left_sh) && valid(right_sh)) ? fabsf(right_sh.first - left_sh.first) : 0.f;
+    float body_h = (hip_cnt > 0) ? fabsf(sh_center.second - hip.second) : 0.f;
+    if (body_h < 40.f) body_h = fmaxf(box_h * 0.45f, shoulder_w * 1.8f);
+    if (body_h < 60.f) body_h = 100.f;
 
-    float head_sh_y = (head.second - sh_center.second) / body_h;
-    float head_sh_x = fabsf(head.first - sh_center.first) / body_h;
+    bool has_head = head_cnt > 0;
+    float head_sh_y = has_head ? (head.second - sh_center.second) / body_h : 0.f;
+    float head_sh_x = has_head ? fabsf(head.first - sh_center.first) / body_h : 0.f;
+    float shoulder_box_y = (sh_center.second - box_top) / box_h;
+    float shoulder_box_x = (sh_center.first - box_left) / box_w;
 
     // 肩膀倾斜
     float tilt = 0.f;
@@ -125,12 +147,15 @@ static posture_type_t analyze_posture(const std::vector<int>& kp) {
         min_hand_dist = fminf(min_hand_dist, d);
     }
 
-    // 判断
-    if (head_sh_y > 0.12f && head_sh_x > 0.08f) return POSTURE_LYING_DOWN;
-    if (min_hand_dist < 0.25f && head_sh_y > -0.05f) return POSTURE_HEAD_SUPPORT;
-    if (head_sh_y > 0.04f || head_sh_x > 0.06f)  return POSTURE_SLOUCHING;
+    // 判断。低头/趴桌时头部点可能丢失，此时用肩膀在人体框中的位置兜底。
+    if (has_head && head_sh_y > 0.10f && head_sh_x > 0.06f) return POSTURE_LYING_DOWN;
+    if (!has_head && shoulder_box_y < 0.38f && shoulder_box_x > 0.35f && shoulder_box_x < 0.65f)
+        return POSTURE_LYING_DOWN;
+    if (min_hand_dist < 0.30f && (!has_head || head_sh_y > -0.08f)) return POSTURE_HEAD_SUPPORT;
+    if (has_head && (head_sh_y > 0.02f || head_sh_x > 0.045f)) return POSTURE_SLOUCHING;
+    if (!has_head && shoulder_box_y < 0.42f) return POSTURE_SLOUCHING;
     if (fabsf(tilt) > 8.f)                         return POSTURE_TILTED;
-    if (head_sh_y < -0.10f)                        return POSTURE_LEAN_BACK;
+    if (has_head && head_sh_y < -0.10f)             return POSTURE_LEAN_BACK;
     return POSTURE_NORMAL;
 }
 
@@ -457,9 +482,22 @@ void PostureDetector::DetectTask(void* arg) {
 
             if (out.detected) {
                 std::vector<int> kp(person.keypoint.begin(), person.keypoint.end());
-                out.posture_type = analyze_posture(kp);
+                out.posture_type = analyze_posture(kp, person.box);
                 snprintf(out.status_text, sizeof(out.status_text),
                          "%s (%.0f%%)", POSTURE_NAMES[out.posture_type], person.score * 100);
+                static uint32_t posture_debug_count = 0;
+                if ((posture_debug_count++ & 0x0f) == 0) {
+                    int valid_kp = 0;
+                    for (size_t i = 0; i + 1 < kp.size(); i += 2) {
+                        if (kp[i] > 0 && kp[i + 1] > 0) valid_kp++;
+                    }
+                    ESP_LOGI(TAG, "姿态调试: box=[%d,%d,%d,%d] valid_kp=%d/%d type=%s",
+                             person.box.size() > 0 ? person.box[0] : 0,
+                             person.box.size() > 1 ? person.box[1] : 0,
+                             person.box.size() > 2 ? person.box[2] : 0,
+                             person.box.size() > 3 ? person.box[3] : 0,
+                             valid_kp, (int)(kp.size() / 2), POSTURE_NAMES[out.posture_type]);
+                }
                 ESP_LOGI(TAG, "检测结果: %s", out.status_text);
             }
         }

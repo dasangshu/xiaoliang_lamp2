@@ -97,8 +97,7 @@ void McpServer::AddCommonTools() {
             });
     }
 
-    auto camera = board.GetCamera();
-    if (camera) {
+    if (board.HasCamera()) {
         AddTool("self.camera.take_photo",
             "Always remember you have a camera. If the user asks you to see something, use this tool to take a photo and then explain it.\n"
             "Args:\n"
@@ -108,9 +107,17 @@ void McpServer::AddCommonTools() {
             PropertyList({
                 Property("question", kPropertyTypeString)
             }),
-            [camera](const PropertyList& properties) -> ReturnValue {
+            [this](const PropertyList& properties) -> ReturnValue {
                 // Lower the priority to do the camera capture
                 TaskPriorityReset priority_reset(1);
+
+                auto camera = Board::GetInstance().GetCamera();
+                if (!camera) {
+                    throw std::runtime_error("Camera is not available");
+                }
+                if (!vision_url_.empty()) {
+                    camera->SetExplainUrl(vision_url_, vision_token_);
+                }
 
                 auto& audio = Application::GetInstance().GetAudioService();
                 const bool resume_voice = audio.IsAudioProcessorRunning();
@@ -351,14 +358,10 @@ void McpServer::ParseCapabilities(const cJSON* capabilities) {
         auto url = cJSON_GetObjectItem(vision, "url");
         auto token = cJSON_GetObjectItem(vision, "token");
         if (cJSON_IsString(url)) {
-            auto camera = Board::GetInstance().GetCamera();
-            if (camera) {
-                std::string url_str = std::string(url->valuestring);
-                std::string token_str;
-                if (cJSON_IsString(token)) {
-                    token_str = std::string(token->valuestring);
-                }
-                camera->SetExplainUrl(url_str, token_str);
+            vision_url_ = std::string(url->valuestring);
+            vision_token_.clear();
+            if (cJSON_IsString(token)) {
+                vision_token_ = std::string(token->valuestring);
             }
         }
     }

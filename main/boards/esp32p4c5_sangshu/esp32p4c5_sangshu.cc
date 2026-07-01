@@ -39,6 +39,7 @@ private:
     Button boot_button_;
     LcdDisplay* display_ = nullptr;
     EspVideo* camera_ = nullptr;
+    SemaphoreHandle_t camera_mutex_ = nullptr;
 
     static esp_err_t EnableDsiPhyPower() {
 #if MIPI_DSI_PHY_PWR_LDO_CHAN > 0
@@ -230,6 +231,10 @@ private:
     }
 
     void InitializeCamera() {
+        if (camera_ != nullptr) {
+            return;
+        }
+
         static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
             .data_width = CAM_CTLR_DATA_WIDTH_8,
             .data_io = {
@@ -382,6 +387,7 @@ private:
 
 public:
     Esp32P4c5SangshuBoard() : boot_button_(BOOT_BUTTON_GPIO) {
+        camera_mutex_ = xSemaphoreCreateMutex();
         InitializeCodecI2c();
         InitializeCameraI2c();
         InitializeLCD();
@@ -389,7 +395,6 @@ public:
         InitializeLampUart();
         InitializeLampTools();
         // InitializeSdCard();
-        InitializeCamera();
         InitializeButtons();
         GetBacklight()->RestoreBrightness();
     }
@@ -420,7 +425,20 @@ public:
         return &backlight;
     }
 
+    virtual bool HasCamera() override {
+        return true;
+    }
+
     virtual Camera* GetCamera() override {
+        if (camera_ == nullptr && camera_mutex_ != nullptr) {
+            if (xSemaphoreTake(camera_mutex_, pdMS_TO_TICKS(3000)) == pdTRUE) {
+                if (camera_ == nullptr) {
+                    ESP_LOGI(TAG, "Lazy initializing camera");
+                    InitializeCamera();
+                }
+                xSemaphoreGive(camera_mutex_);
+            }
+        }
         return camera_;
     }
 

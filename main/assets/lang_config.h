@@ -183,6 +183,20 @@ namespace Lang {
         static_cast<size_t>(ogg_popup_end - ogg_popup_start)
         };
 
+        extern const char ogg_pose1_start[] asm("_binary_pose1_ogg_start");
+        extern const char ogg_pose1_end[] asm("_binary_pose1_ogg_end");
+        static const std::string_view OGG_POSE1 {
+        static_cast<const char*>(ogg_pose1_start),
+        static_cast<size_t>(ogg_pose1_end - ogg_pose1_start)
+        };
+
+        extern const char ogg_pose2_start[] asm("_binary_pose2_ogg_start");
+        extern const char ogg_pose2_end[] asm("_binary_pose2_ogg_end");
+        static const std::string_view OGG_POSE2 {
+        static_cast<const char*>(ogg_pose2_start),
+        static_cast<size_t>(ogg_pose2_end - ogg_pose2_start)
+        };
+
         extern const char ogg_success_start[] asm("_binary_success_ogg_start");
         extern const char ogg_success_end[] asm("_binary_success_ogg_end");
         static const std::string_view OGG_SUCCESS {

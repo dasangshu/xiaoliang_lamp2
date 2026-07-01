@@ -34,11 +34,15 @@ typedef struct {
 
 static void mjpeg_player_task(void *arg) {
     mjpeg_player_t *player = (mjpeg_player_t *)arg;
-    uint32_t read_pos = 0;
     size_t bytes_read = 0;
     uint32_t frame_counter = 0;
+    uint32_t dropped_frames = 0;
+    bool collecting_frame = false;
+    uint8_t previous_byte = 0;
+    size_t frame_size = 0;
     TickType_t frame_interval_ticks = (player->target_fps > 0)
         ? pdMS_TO_TICKS(1000 / player->target_fps) : 0;
+    const TickType_t min_frame_yield_ticks = pdMS_TO_TICKS(10);
 
     ESP_LOGI(TAG, "MJPEG player task started (target_fps=%u)", (unsigned)player->target_fps);
 
@@ -50,97 +54,88 @@ static void mjpeg_player_task(void *arg) {
             if (player->is_loop) {
                 ESP_LOGD(TAG, "End of file, restarting loop...");
                 media_src_storage_seek(&player->file, 0);
-                read_pos = 0;
+                collecting_frame = false;
+                previous_byte = 0;
+                frame_size = 0;
                 continue;
             }
             ESP_LOGD(TAG, "End of file, stopping playback");
             break;
         }
 
-        uint8_t *buf = player->cache_buff;
-        size_t len = bytes_read;
+        for (size_t i = 0; i < bytes_read && player->is_playing; i++) {
+            uint8_t byte = player->cache_buff[i];
 
-        // Scan for JPEG SOI (0xFF 0xD8) and EOI (0xFF 0xD9) pairs
-        size_t pos = 0;
-        while (pos < len - 1 && player->is_playing) {
-            // Find next SOI
-            while (pos < len - 1 && !(buf[pos] == 0xFF && buf[pos + 1] == 0xD8)) {
-                pos++;
-            }
-            if (pos >= len - 1) break;
-
-            size_t frame_start_pos = pos;
-            pos += 2; // skip SOI marker
-
-            // Find EOI within remaining data
-            while (pos < len - 1) {
-                if (buf[pos] == 0xFF && buf[pos + 1] == 0xD9) {
-                    // Found complete frame
-                    size_t frame_size = pos + 2 - frame_start_pos;
-                    if (frame_size > player->in_buff_size) {
-                        ESP_LOGW(TAG, "Frame too large: %zu > %u, skipping",
-                                 frame_size, player->in_buff_size);
-                    } else {
-                        memcpy(player->in_buff, buf + frame_start_pos, frame_size);
-
-                        uint8_t *out_data = NULL;
-                        size_t out_len = 0;
-                        size_t out_width = 0;
-                        size_t out_height = 0;
-                        size_t out_stride = 0;
-
-                        esp_err_t ret = jpeg_to_image(player->in_buff, frame_size,
-                                                      &out_data, &out_len,
-                                                      &out_width, &out_height, &out_stride);
-                        if (ret == ESP_OK && out_data != NULL) {
-                            if (player->on_frame_cb) {
-                                player->on_frame_cb(out_data, (uint32_t)out_width,
-                                                    (uint32_t)out_height, player->user_data);
-                            }
-                            heap_caps_free(out_data);
-                        } else {
-                            static int last_err = 0;
-                            if (ret != last_err) {
-                                ESP_LOGW(TAG, "JPEG decode failed: %d frame_size=%zu",
-                                         ret, frame_size);
-                                last_err = ret;
-                            }
-                        }
-                    }
-                    // Move past EOI for next search
-                    pos += 2;
-                    frame_counter++;
-                    // Frame rate control: sleep remainder of frame interval so audio/wake-word tasks get CPU
-                    if (frame_interval_ticks > 0) {
-                        TickType_t elapsed = xTaskGetTickCount() - frame_start_tick;
-                        if (elapsed < frame_interval_ticks) {
-                            vTaskDelay(frame_interval_ticks - elapsed);
-                        }
-                    }
-                    taskYIELD();
-                    frame_start_tick = xTaskGetTickCount();
-                    continue;
+            if (!collecting_frame) {
+                if (previous_byte == 0xFF && byte == 0xD8) {
+                    collecting_frame = true;
+                    frame_size = 0;
+                    player->in_buff[frame_size++] = 0xFF;
+                    player->in_buff[frame_size++] = 0xD8;
                 }
-                pos++;
+                previous_byte = byte;
+                continue;
             }
 
-            if (pos >= len - 1) {
-                // EOI not found in this buffer chunk - need to read more
-                // Advance read_pos to end of partial frame start so we don't re-scan same area
-                size_t partial = len - frame_start_pos;
-                read_pos += frame_start_pos;
-                media_src_storage_seek(&player->file, read_pos);
-                ESP_LOGD(TAG, "Partial JPEG at buffer end (%zu bytes), reading more...", partial);
-                break;  // exit while to read more data
+            if (frame_size >= player->in_buff_size) {
+                dropped_frames++;
+                if ((dropped_frames & 0x07) == 1) {
+                    ESP_LOGW(TAG, "JPEG frame exceeds input buffer (%u bytes), dropping (count=%u)",
+                             (unsigned)player->in_buff_size, (unsigned)dropped_frames);
+                }
+                collecting_frame = false;
+                frame_size = 0;
+                previous_byte = byte;
+                continue;
             }
-        }
 
-        // Advance past all data we scanned (all complete frames found)
-        if (pos >= len) {
-            read_pos += len;
-            media_src_storage_seek(&player->file, read_pos);
-        }
+            player->in_buff[frame_size++] = byte;
 
+            if (previous_byte == 0xFF && byte == 0xD9) {
+                uint8_t *out_data = NULL;
+                size_t out_len = 0;
+                size_t out_width = 0;
+                size_t out_height = 0;
+                size_t out_stride = 0;
+
+                esp_err_t ret = jpeg_to_image(player->in_buff, frame_size,
+                                              &out_data, &out_len,
+                                              &out_width, &out_height, &out_stride);
+                if (ret == ESP_OK && out_data != NULL) {
+                    if (player->on_frame_cb) {
+                        player->on_frame_cb(out_data, (uint32_t)out_width,
+                                            (uint32_t)out_height, player->user_data);
+                    }
+                    heap_caps_free(out_data);
+                    frame_counter++;
+                } else {
+                    static int last_err = 0;
+                    if (ret != last_err) {
+                        ESP_LOGW(TAG, "JPEG decode failed: %d frame_size=%zu",
+                                 ret, frame_size);
+                        last_err = ret;
+                    }
+                }
+
+                collecting_frame = false;
+                frame_size = 0;
+
+                // Frame rate control: sleep remainder of frame interval so audio/wake-word tasks get CPU
+                if (frame_interval_ticks > 0) {
+                    TickType_t elapsed = xTaskGetTickCount() - frame_start_tick;
+                    if (elapsed < frame_interval_ticks) {
+                        vTaskDelay(frame_interval_ticks - elapsed);
+                    } else {
+                        vTaskDelay(min_frame_yield_ticks);
+                    }
+                } else {
+                    vTaskDelay(min_frame_yield_ticks);
+                }
+                frame_start_tick = xTaskGetTickCount();
+            }
+
+            previous_byte = byte;
+        }
     }
 
     player->is_playing = false;

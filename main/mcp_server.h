@@ -330,6 +330,8 @@ private:
     McpServer();
     ~McpServer();
 
+    std::string vision_url_;
+    std::string vision_token_;
     void ParseCapabilities(const cJSON* capabilities);
 
     void ReplyResult(int id, const std::string& result);
