@@ -175,7 +175,21 @@ private:
     // 坐姿检测
     std::unique_ptr<PostureDetector> posture_detector_;
     TickType_t posture_last_alert_tick_ = 0;
-    static constexpr uint32_t POSTURE_ALERT_INTERVAL_MS = 30000;  // 两次警告最短间隔30s
+    static constexpr uint32_t POSTURE_ALERT_INTERVAL_MS = 3 * 60 * 1000;  // 两次语音提醒最短间隔3分钟
+    int posture_health_score_ = 100;
+    bool posture_bad_active_ = false;
+    bool posture_light_prompt_sent_ = false;
+    bool posture_voice_prompt_sent_ = false;
+    posture_type_t posture_active_type_ = POSTURE_UNKNOWN;
+    TickType_t posture_bad_start_tick_ = 0;
+    TickType_t posture_good_start_tick_ = 0;
+    TickType_t posture_last_health_tick_ = 0;
+    TickType_t posture_last_corrected_reward_tick_ = 0;
+    TickType_t posture_last_good_reward_tick_ = 0;
+    static constexpr uint32_t POSTURE_LIGHT_PROMPT_MS = 20 * 1000;
+    static constexpr uint32_t POSTURE_VOICE_PROMPT_MS = 60 * 1000;
+    static constexpr uint32_t POSTURE_CORRECTED_REWARD_INTERVAL_MS = 2 * 60 * 1000;
+    static constexpr uint32_t POSTURE_GOOD_STREAK_MS = 25 * 60 * 1000;
 
     // 进入 idle 的时刻，用于抑制刚切换时的振动误唤醒
     TickType_t idle_entered_tick_ = 0;
@@ -185,6 +199,8 @@ private:
     void StartPostureDetection();
     void StopPostureDetection();
     void OnPostureResult(const posture_result_t& result);
+    void AdjustPostureHealthScore(int delta);
+    void SchedulePostureFeedback(const char* message, const char* emotion, const std::string_view& sound, uint32_t restore_delay_ms);
 };
 
 

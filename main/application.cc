@@ -21,6 +21,30 @@
 
 #define TAG "Application"
 
+namespace {
+const char* PostureAdviceText(posture_type_t type) {
+    switch (type) {
+        case POSTURE_LYING_DOWN:
+            return "趴桌对颈椎压力很大，先坐直一下";
+        case POSTURE_HEAD_SUPPORT:
+            return "不要一直撑头，肩颈放松，坐回椅背";
+        case POSTURE_SLOUCHING:
+            return "低头弯腰有一会儿了，抬头看前方";
+        case POSTURE_LEAN_BACK:
+            return "身体后仰太多了，坐回桌前保持稳定";
+        case POSTURE_TILTED:
+            return "身体有点倾斜，双肩放平，慢慢坐正";
+        default:
+            return "坐姿有点不标准，调整一下就好";
+    }
+}
+
+struct PostureFeedbackRestoreContext {
+    Application* app = nullptr;
+    uint32_t delay_ms = 3000;
+};
+}  // namespace
+
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -82,6 +106,7 @@ void Application::Initialize() {
     // Setup the display
     auto display = board.GetDisplay();
     display->SetupUI();
+    display->SetHealthScore(100);
     display->SetEmotion("loading.mjpeg");
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
@@ -1235,41 +1260,143 @@ void Application::StopPostureDetection() {
 }
 
 void Application::OnPostureResult(const posture_result_t& result) {
-    if (!result.detected || result.posture_type == POSTURE_NORMAL || result.posture_type == POSTURE_UNKNOWN)
+    if (!result.detected || result.posture_type == POSTURE_UNKNOWN) {
         return;
+    }
 
-    // 限制警告频率
     TickType_t now = xTaskGetTickCount();
-    if (now - posture_last_alert_tick_ < pdMS_TO_TICKS(POSTURE_ALERT_INTERVAL_MS))
+
+    if (result.posture_type == POSTURE_NORMAL) {
+        if (posture_good_start_tick_ == 0) {
+            posture_good_start_tick_ = now;
+        }
+
+        if (posture_bad_active_) {
+            bool should_reward = (posture_light_prompt_sent_ || posture_voice_prompt_sent_) &&
+                (now - posture_last_corrected_reward_tick_ >= pdMS_TO_TICKS(POSTURE_CORRECTED_REWARD_INTERVAL_MS));
+            posture_bad_active_ = false;
+            posture_light_prompt_sent_ = false;
+            posture_voice_prompt_sent_ = false;
+            posture_active_type_ = POSTURE_UNKNOWN;
+            posture_bad_start_tick_ = 0;
+            ESP_LOGI("Application", "坐姿已纠正");
+            AdjustPostureHealthScore(2);
+            if (should_reward) {
+                posture_last_corrected_reward_tick_ = now;
+                SchedulePostureFeedback("很好，坐姿恢复啦，继续保持", "loving.mjpeg", "", 1800);
+            }
+            return;
+        }
+
+        if (now - posture_last_health_tick_ >= pdMS_TO_TICKS(60 * 1000)) {
+            posture_last_health_tick_ = now;
+            AdjustPostureHealthScore(1);
+        }
+
+        if (now - posture_good_start_tick_ >= pdMS_TO_TICKS(POSTURE_GOOD_STREAK_MS) &&
+            now - posture_last_good_reward_tick_ >= pdMS_TO_TICKS(POSTURE_GOOD_STREAK_MS)) {
+            posture_last_good_reward_tick_ = now;
+            AdjustPostureHealthScore(3);
+            SchedulePostureFeedback("已保持良好坐姿 25 分钟，健康值提升", "confident.mjpeg", "", 1800);
+        }
         return;
-    posture_last_alert_tick_ = now;
+    }
 
-    ESP_LOGI("Application", "坐姿异常: %s", result.status_text);
+    posture_good_start_tick_ = 0;
 
-    // 切到主任务上下文再弹提示
-    Schedule([this, posture_type = result.posture_type]() {
+    if (!posture_bad_active_ || posture_active_type_ != result.posture_type) {
+        posture_bad_active_ = true;
+        posture_light_prompt_sent_ = false;
+        posture_voice_prompt_sent_ = false;
+        posture_active_type_ = result.posture_type;
+        posture_bad_start_tick_ = now;
+        ESP_LOGI("Application", "坐姿异常开始: %s", result.status_text);
+        return;
+    }
+
+    TickType_t bad_duration = now - posture_bad_start_tick_;
+
+    if (!posture_light_prompt_sent_ && bad_duration >= pdMS_TO_TICKS(POSTURE_LIGHT_PROMPT_MS)) {
+        posture_light_prompt_sent_ = true;
+        AdjustPostureHealthScore(-1);
+        ESP_LOGI("Application", "坐姿轻提醒: %s", result.status_text);
+        const char* advice = PostureAdviceText(result.posture_type);
+        Schedule([this, advice]() {
+            if (GetDeviceState() != kDeviceStateIdle) return;
+            Board::GetInstance().GetDisplay()->SetChatMessage("system", advice);
+        });
+        return;
+    }
+
+    if (!posture_voice_prompt_sent_ && bad_duration >= pdMS_TO_TICKS(POSTURE_VOICE_PROMPT_MS)) {
+        if (now - posture_last_alert_tick_ < pdMS_TO_TICKS(POSTURE_ALERT_INTERVAL_MS)) {
+            return;
+        }
+        posture_voice_prompt_sent_ = true;
+        posture_last_alert_tick_ = now;
+        AdjustPostureHealthScore(-3);
+        ESP_LOGI("Application", "坐姿语音提醒: %s", result.status_text);
+        const char* advice = PostureAdviceText(result.posture_type);
+        const auto& sound = (result.posture_type == POSTURE_SLOUCHING || result.posture_type == POSTURE_LYING_DOWN)
+            ? Lang::Sounds::OGG_POSE2
+            : Lang::Sounds::OGG_POSE1;
+        SchedulePostureFeedback(advice, "sad.mjpeg", sound, 3000);
+        return;
+    }
+}
+
+void Application::AdjustPostureHealthScore(int delta) {
+    Schedule([this, delta]() {
+        posture_health_score_ += delta;
+        if (posture_health_score_ < 0) {
+            posture_health_score_ = 0;
+        } else if (posture_health_score_ > 100) {
+            posture_health_score_ = 100;
+        }
+        Board::GetInstance().GetDisplay()->SetHealthScore(posture_health_score_);
+    });
+}
+
+void Application::SchedulePostureFeedback(const char* message, const char* emotion, const std::string_view& sound, uint32_t restore_delay_ms) {
+    std::string message_copy = message ? message : "";
+    std::string emotion_copy = emotion ? emotion : "idle.mjpeg";
+    std::string sound_copy(sound);
+
+    Schedule([this, message_copy, emotion_copy, sound_copy, restore_delay_ms]() {
         if (GetDeviceState() != kDeviceStateIdle) return;
         posture_start_pending_ = false;
         StopPostureDetection();
 
-        const char* msg = POSTURE_NAMES[posture_type];
-        const auto& sound = (posture_type == POSTURE_SLOUCHING)
-            ? Lang::Sounds::OGG_POSE2
-            : Lang::Sounds::OGG_EXCLAMATION;
-        Alert(Lang::Strings::WARNING, msg, "bye.mjpeg", sound);
+        auto display = Board::GetInstance().GetDisplay();
+        display->SetStatus(Lang::Strings::WARNING);
+        display->SetEmotion(emotion_copy.c_str());
+        display->SetChatMessage("system", message_copy.c_str());
+        if (!sound_copy.empty()) {
+            audio_service_.PlaySound(std::string_view(sound_copy.data(), sound_copy.size()));
+        }
 
-        // 3 秒后自动关闭提示
-        xTaskCreate([](void* p) {
-            Application* app = (Application*)p;
-            vTaskDelay(pdMS_TO_TICKS(3000));
+        auto* ctx = new PostureFeedbackRestoreContext{this, restore_delay_ms};
+        BaseType_t task_ok = xTaskCreate([](void* p) {
+            auto* ctx = static_cast<PostureFeedbackRestoreContext*>(p);
+            Application* app = ctx->app;
+            uint32_t delay_ms = ctx->delay_ms;
+            delete ctx;
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
             app->Schedule([app]() {
-                app->DismissAlert();
                 if (app->GetDeviceState() == kDeviceStateIdle) {
+                    app->DismissAlert();
                     app->idle_entered_tick_ = xTaskGetTickCount();
                     app->posture_start_pending_ = true;
                 }
             });
             vTaskDelete(NULL);
-        }, "posture_alert", 2048, this, 1, nullptr);
+        }, "posture_pet", 2048, ctx, 1, nullptr);
+        if (task_ok != pdPASS) {
+            delete ctx;
+            ESP_LOGW(TAG, "Failed to create posture feedback restore task");
+            DismissAlert();
+            idle_entered_tick_ = xTaskGetTickCount();
+            posture_start_pending_ = true;
+        }
     });
 }

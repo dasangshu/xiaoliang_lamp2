@@ -22,6 +22,7 @@ public:
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image);
     virtual void SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) = 0;
+    virtual void SetHealthScore(int score) override;
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual bool SnapshotToJpeg(std::string& jpeg_data, int quality = 80);
@@ -34,12 +35,15 @@ protected:
     lv_obj_t *status_label_ = nullptr;
     lv_obj_t *notification_label_ = nullptr;
     lv_obj_t *mute_label_ = nullptr;
+    lv_obj_t *health_icon_label_ = nullptr;
+    lv_obj_t *health_label_ = nullptr;
     lv_obj_t *battery_label_ = nullptr;
     lv_obj_t* low_battery_popup_ = nullptr;
     lv_obj_t* low_battery_label_ = nullptr;
     
     const char* battery_icon_ = nullptr;
     const char* network_icon_ = nullptr;
+    int health_score_ = 100;
     bool muted_ = false;
     char last_idle_time_text_[16] = {0};
 

@@ -63,6 +63,12 @@ LvglDisplay::~LvglDisplay() {
     if (mute_label_ != nullptr) {
         lv_obj_del(mute_label_);
     }
+    if (health_icon_label_ != nullptr) {
+        lv_obj_del(health_icon_label_);
+    }
+    if (health_label_ != nullptr) {
+        lv_obj_del(health_label_);
+    }
     if (battery_label_ != nullptr) {
         lv_obj_del(battery_label_);
     }
@@ -146,6 +152,24 @@ void LvglDisplay::SetIdleClockStatus(bool force) {
         lv_label_set_text(status_label_, time_str);
         lv_obj_remove_flag(status_label_, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void LvglDisplay::SetHealthScore(int score) {
+    if (score < 0) {
+        score = 0;
+    } else if (score > 100) {
+        score = 100;
+    }
+
+    DisplayLockGuard lock(this);
+    health_score_ = score;
+    if (health_label_ == nullptr) {
+        return;
+    }
+
+    char text[4];
+    snprintf(text, sizeof(text), "%d", health_score_);
+    lv_label_set_text(health_label_, text);
 }
 
 void LvglDisplay::UpdateStatusBar(bool update_all) {

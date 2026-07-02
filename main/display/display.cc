@@ -35,6 +35,9 @@ void Display::ShowNotification(const char* notification, int duration_ms) {
 void Display::UpdateStatusBar(bool update_all) {
 }
 
+void Display::SetHealthScore(int score) {
+    ESP_LOGW(TAG, "SetHealthScore: %d", score);
+}
 
 void Display::SetEmotion(const char* emotion) {
     ESP_LOGW(TAG, "SetEmotion: %s", emotion);

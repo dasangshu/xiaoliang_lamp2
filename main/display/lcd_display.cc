@@ -415,17 +415,43 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_pad_all(top_bar_, 0, 0);
     lv_obj_set_style_pad_top(top_bar_, lvgl_theme->spacing(2), 0);
     lv_obj_set_style_pad_bottom(top_bar_, lvgl_theme->spacing(2), 0);
-    lv_obj_set_style_pad_left(top_bar_, lvgl_theme->spacing(4), 0);
+    lv_obj_set_style_pad_left(top_bar_, lvgl_theme->spacing(1), 0);
     lv_obj_set_style_pad_right(top_bar_, lvgl_theme->spacing(4), 0);
     lv_obj_set_flex_flow(top_bar_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(top_bar_, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(top_bar_, LV_SCROLLBAR_MODE_OFF);
 
-    // Left icon
-    network_label_ = lv_label_create(top_bar_);
+    // Left health indicator. Keep network_label_ alive but hidden for future use.
+    lv_obj_t* left_icons = lv_obj_create(top_bar_);
+    lv_obj_set_size(left_icons, 104, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(left_icons, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(left_icons, 0, 0);
+    lv_obj_set_style_pad_all(left_icons, 0, 0);
+    lv_obj_set_flex_flow(left_icons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_icons, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    network_label_ = lv_label_create(left_icons);
     lv_label_set_text(network_label_, "");
     lv_obj_set_style_text_font(network_label_, icon_font, 0);
     lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
+    lv_obj_add_flag(network_label_, LV_OBJ_FLAG_HIDDEN);
+
+    health_icon_label_ = lv_label_create(left_icons);
+    lv_label_set_text(health_icon_label_, FONT_AWESOME_HEART);
+    lv_obj_set_width(health_icon_label_, 36);
+    lv_label_set_long_mode(health_icon_label_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(health_icon_label_, icon_font, 0);
+    lv_obj_set_style_text_align(health_icon_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(health_icon_label_, lvgl_theme->text_color(), 0);
+
+    health_label_ = lv_label_create(left_icons);
+    lv_label_set_text(health_label_, "100");
+    lv_obj_set_width(health_label_, 48);
+    lv_label_set_long_mode(health_label_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(health_label_, text_font, 0);
+    lv_obj_set_style_text_align(health_label_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(health_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_margin_left(health_label_, lvgl_theme->spacing(1), 0);
 
     // Right icons container
     lv_obj_t* right_icons = lv_obj_create(top_bar_);
@@ -440,6 +466,7 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(mute_label_, "");
     lv_obj_set_style_text_font(mute_label_, icon_font, 0);
     lv_obj_set_style_text_color(mute_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_margin_left(mute_label_, lvgl_theme->spacing(2), 0);
 
     battery_label_ = lv_label_create(right_icons);
     lv_label_set_text(battery_label_, "");
@@ -461,7 +488,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 0);  // Overlap with top_bar_
 
     notification_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.8);
+    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.48);
     lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(notification_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(notification_label_, "");
@@ -469,7 +496,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
     status_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(status_label_, LV_HOR_RES * 0.8);
+    lv_obj_set_width(status_label_, LV_HOR_RES * 0.48);
     lv_label_set_long_mode(status_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
@@ -891,18 +918,44 @@ void LcdDisplay::SetupUI() {
     lv_obj_set_style_pad_all(top_bar_, 0, 0);
     lv_obj_set_style_pad_top(top_bar_, lvgl_theme->spacing(2), 0);
     lv_obj_set_style_pad_bottom(top_bar_, lvgl_theme->spacing(2), 0);
-    lv_obj_set_style_pad_left(top_bar_, lvgl_theme->spacing(4), 0);
+    lv_obj_set_style_pad_left(top_bar_, lvgl_theme->spacing(1), 0);
     lv_obj_set_style_pad_right(top_bar_, lvgl_theme->spacing(4), 0);
     lv_obj_set_flex_flow(top_bar_, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(top_bar_, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(top_bar_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, 0);
 
-    // Left icon
-    network_label_ = lv_label_create(top_bar_);
+    // Left health indicator. Keep network_label_ alive but hidden for future use.
+    lv_obj_t* left_icons = lv_obj_create(top_bar_);
+    lv_obj_set_size(left_icons, 104, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(left_icons, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(left_icons, 0, 0);
+    lv_obj_set_style_pad_all(left_icons, 0, 0);
+    lv_obj_set_flex_flow(left_icons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(left_icons, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    network_label_ = lv_label_create(left_icons);
     lv_label_set_text(network_label_, "");
     lv_obj_set_style_text_font(network_label_, icon_font, 0);
     lv_obj_set_style_text_color(network_label_, lvgl_theme->text_color(), 0);
+    lv_obj_add_flag(network_label_, LV_OBJ_FLAG_HIDDEN);
+
+    health_icon_label_ = lv_label_create(left_icons);
+    lv_label_set_text(health_icon_label_, FONT_AWESOME_HEART);
+    lv_obj_set_width(health_icon_label_, 36);
+    lv_label_set_long_mode(health_icon_label_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(health_icon_label_, icon_font, 0);
+    lv_obj_set_style_text_align(health_icon_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(health_icon_label_, lvgl_theme->text_color(), 0);
+
+    health_label_ = lv_label_create(left_icons);
+    lv_label_set_text(health_label_, "100");
+    lv_obj_set_width(health_label_, 48);
+    lv_label_set_long_mode(health_label_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(health_label_, text_font, 0);
+    lv_obj_set_style_text_align(health_label_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(health_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_margin_left(health_label_, lvgl_theme->spacing(1), 0);
 
     // Right icons container
     lv_obj_t* right_icons = lv_obj_create(top_bar_);
@@ -917,6 +970,7 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(mute_label_, "");
     lv_obj_set_style_text_font(mute_label_, icon_font, 0);
     lv_obj_set_style_text_color(mute_label_, lvgl_theme->text_color(), 0);
+    lv_obj_set_style_margin_left(mute_label_, lvgl_theme->spacing(2), 0);
 
     battery_label_ = lv_label_create(right_icons);
     lv_label_set_text(battery_label_, "");
@@ -938,7 +992,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 0);  // Overlap with top_bar_
 
     notification_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.75);
+    lv_obj_set_width(notification_label_, LV_HOR_RES * 0.48);
     lv_obj_set_style_text_align(notification_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(notification_label_, lvgl_theme->text_color(), 0);
     lv_label_set_text(notification_label_, "");
@@ -946,7 +1000,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
 
     status_label_ = lv_label_create(status_bar_);
-    lv_obj_set_width(status_label_, LV_HOR_RES * 0.75);
+    lv_obj_set_width(status_label_, LV_HOR_RES * 0.48);
     lv_label_set_long_mode(status_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
@@ -1322,10 +1376,14 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     if (text_font->line_height >= 40) {
         lv_obj_set_style_text_font(mute_label_, large_icon_font, 0);
+        if (health_icon_label_) lv_obj_set_style_text_font(health_icon_label_, large_icon_font, 0);
+        if (health_label_) lv_obj_set_style_text_font(health_label_, text_font, 0);
         lv_obj_set_style_text_font(battery_label_, large_icon_font, 0);
         lv_obj_set_style_text_font(network_label_, large_icon_font, 0);
     } else {
         lv_obj_set_style_text_font(mute_label_, icon_font, 0);
+        if (health_icon_label_) lv_obj_set_style_text_font(health_icon_label_, icon_font, 0);
+        if (health_label_) lv_obj_set_style_text_font(health_label_, text_font, 0);
         lv_obj_set_style_text_font(battery_label_, icon_font, 0);
         lv_obj_set_style_text_font(network_label_, icon_font, 0);
     }
@@ -1353,6 +1411,8 @@ void LcdDisplay::SetTheme(Theme* theme) {
     lv_obj_set_style_text_color(status_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_text_color(notification_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_text_color(mute_label_, lvgl_theme->text_color(), 0);
+    if (health_icon_label_) lv_obj_set_style_text_color(health_icon_label_, lvgl_theme->text_color(), 0);
+    if (health_label_) lv_obj_set_style_text_color(health_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_text_color(battery_label_, lvgl_theme->text_color(), 0);
     lv_obj_set_style_text_color(emoji_label_, lvgl_theme->text_color(), 0);
 
