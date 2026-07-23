@@ -1,0 +1,32 @@
+# Build output
+build/
+*.bin
+*.elf
+*.map
+*.obj
+*.o
+
+# IDE configurations
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Cache
+.cache/
+__pycache__/
+*.pyc
+
+# ESP-IDF specific
+managed_components/
+dependencies.lock
+sdkconfig.old
+.clangd
+
+# Generated files
+generated_models/

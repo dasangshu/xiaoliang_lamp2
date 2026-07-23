@@ -11,17 +11,36 @@
 #include "settings.h"
 #include "mjpeg_player/mjpeg_player_port.h"
 #include "boards/common/esp_video.h"
+#include "display/lcd_display.h"
 
 #include <cstring>
+#include <ctime>
 #include <esp_log.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
+#include <sys/stat.h>
 
 #define TAG "Application"
+#define ENABLE_AUTO_POSTURE_DETECTION 1
 
 namespace {
+constexpr uint32_t kIdleMjpegPrerollMs = 1000;
+constexpr uint32_t kLlmEmotionMinDisplayMs = 2500;
+
+bool SdcardFileExists(const char* path) {
+    struct stat st;
+    return path != nullptr && stat(path, &st) == 0;
+}
+
+std::string ResolveLlmEmotionMjpeg(const std::string& emotion) {
+    if (!emotion.empty() && emotion.find(".mjpeg") == std::string::npos) {
+        return emotion + ".mjpeg";
+    }
+    return emotion;
+}
+
 const char* PostureAdviceText(posture_type_t type) {
     switch (type) {
         case POSTURE_LYING_DOWN:
@@ -43,6 +62,7 @@ struct PostureFeedbackRestoreContext {
     Application* app = nullptr;
     uint32_t delay_ms = 3000;
 };
+
 }  // namespace
 
 
@@ -98,8 +118,8 @@ void Application::Initialize() {
         .buffer_size = 300 * 1024,  // enough for larger 480x800 MJPEG JPEG frames
         .core_id = -1,     // let the scheduler place MJPEG; do not pin heavy JPEG decode to CPU0
         .use_psram = true,
-        .task_priority = 2,    // below AFE(5+), LVGL(4), audio(3) — yields CPU freely via vTaskDelay
-        .target_fps = 8        // 480x800 JPEG decode is heavy on P4; keep CPU0/LVGL watchdog healthy
+        .task_priority = 1,    // keep MJPEG below audio and wake-word paths
+        .target_fps = 8        // talk/bye are raised to 15fps per file in mjpeg_player_port
     };
     mjpeg_player_port_init(&mjpeg_config);
 
@@ -201,6 +221,13 @@ void Application::Initialize() {
     // Start network asynchronously
     board.StartNetwork();
 
+    auto* startup_event_group = event_group_;
+    xTaskCreate([](void* arg) {
+        vTaskDelay(pdMS_TO_TICKS(15000));
+        xEventGroupSetBits(static_cast<EventGroupHandle_t>(arg), MAIN_EVENT_STARTUP_TIMEOUT);
+        vTaskDelete(NULL);
+    }, "startup_guard", 3072, startup_event_group, 1, nullptr);
+
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
 }
@@ -221,6 +248,7 @@ void Application::Run() {
         MAIN_EVENT_TOGGLE_CHAT |
         MAIN_EVENT_START_LISTENING |
         MAIN_EVENT_STOP_LISTENING |
+        MAIN_EVENT_STARTUP_TIMEOUT |
         MAIN_EVENT_ACTIVATION_DONE |
         MAIN_EVENT_STATE_CHANGED;
 
@@ -242,6 +270,10 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_ACTIVATION_DONE) {
             HandleActivationDoneEvent();
+        }
+
+        if (bits & MAIN_EVENT_STARTUP_TIMEOUT) {
+            HandleStartupTimeoutEvent();
         }
 
         if (bits & MAIN_EVENT_STATE_CHANGED) {
@@ -292,7 +324,11 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            StopIdleMjpegIfNeeded(false);
+            HandleEyeCareClockTick();
+            HandleReminderClockTick();
 
+#if ENABLE_AUTO_POSTURE_DETECTION
             if (posture_start_pending_ && GetDeviceState() == kDeviceStateIdle) {
                 TickType_t now = xTaskGetTickCount();
                 if ((now - idle_entered_tick_) * portTICK_PERIOD_MS >= POSTURE_IDLE_DELAY_MS) {
@@ -300,6 +336,7 @@ void Application::Run() {
                     StartPostureDetection();
                 }
             }
+#endif
         
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -369,6 +406,19 @@ void Application::HandleActivationDoneEvent() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     });
+}
+
+void Application::HandleStartupTimeoutEvent() {
+    auto state = GetDeviceState();
+    if (state != kDeviceStateStarting && state != kDeviceStateActivating) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "Startup did not reach idle in time (state=%d), enabling local wake-word idle", (int)state);
+    if (!protocol_) {
+        InitializeProtocol();
+    }
+    SetDeviceState(kDeviceStateIdle);
 }
 
 void Application::ActivationTask() {
@@ -447,9 +497,9 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
-    const int MAX_RETRY = 10;
+    const int MAX_RETRY = 2;
     int retry_count = 0;
-    int retry_delay = 10; // Initial retry delay in seconds
+    int retry_delay = 3; // Initial retry delay in seconds
 
     auto& board = Board::GetInstance();
     while (true) {
@@ -477,7 +527,7 @@ void Application::CheckNewVersion() {
                     break;
                 }
             }
-            retry_delay *= 2; // Double the retry delay
+            retry_delay = 5;
             continue;
         }
         retry_count = 0;
@@ -528,13 +578,20 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    if (ota_->HasMqttConfig()) {
+    if (ota_ && ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota_->HasWebsocketConfig()) {
+    } else if (ota_ && ota_->HasWebsocketConfig()) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
-        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
-        protocol_ = std::make_unique<MqttProtocol>();
+        Settings websocket_settings("websocket", false);
+        Settings mqtt_settings("mqtt", false);
+        if (!websocket_settings.GetString("url").empty()) {
+            ESP_LOGW(TAG, "No OTA protocol config, using saved WebSocket settings");
+            protocol_ = std::make_unique<WebsocketProtocol>();
+        } else {
+            ESP_LOGW(TAG, "No OTA protocol config, using saved MQTT settings");
+            protocol_ = std::make_unique<MqttProtocol>();
+        }
     }
 
     protocol_->OnConnected([this]() {
@@ -578,6 +635,7 @@ void Application::InitializeProtocol() {
                 Schedule([this]() {
                     aborted_ = false;
                     tts_session_id_++;
+                    last_llm_emotion_tick_ = 0;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
@@ -594,6 +652,14 @@ void Application::InitializeProtocol() {
                             uint32_t wait_session_id = ctx->session_id;
                             delete ctx;
                             app->audio_service_.WaitForPlaybackQueueEmpty();
+                            TickType_t last_emotion_tick = app->last_llm_emotion_tick_;
+                            if (last_emotion_tick != 0) {
+                                TickType_t elapsed = xTaskGetTickCount() - last_emotion_tick;
+                                TickType_t min_display_ticks = pdMS_TO_TICKS(kLlmEmotionMinDisplayMs);
+                                if (elapsed < min_display_ticks) {
+                                    vTaskDelay(min_display_ticks - elapsed);
+                                }
+                            }
                             app->Schedule([app, wait_session_id]() {
                                 if (app->tts_session_id_ != wait_session_id ||
                                     app->GetDeviceState() != kDeviceStateSpeaking) {
@@ -631,12 +697,20 @@ void Application::InitializeProtocol() {
             if (cJSON_IsString(emotion)) {
                 Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
                     auto state = GetDeviceState();
-                    if ((state == kDeviceStateSpeaking || state == kDeviceStateListening) &&
-                        emotion_str.find(".mjpeg") == std::string::npos) {
-                        ESP_LOGI(TAG, "Ignore LLM emotion '%s' during voice MJPEG state", emotion_str.c_str());
+                    if (state == kDeviceStateListening) {
+                        ESP_LOGI(TAG, "Ignore LLM emotion '%s' while listening", emotion_str.c_str());
                         return;
                     }
-                    display->SetEmotion(emotion_str.c_str());
+                    if (emotion_str == "laughing" || emotion_str == "laughing.mjpeg") {
+                        ESP_LOGI(TAG, "Keep talk.mjpeg for LLM emotion '%s'", emotion_str.c_str());
+                        return;
+                    }
+                    auto display_emotion = ResolveLlmEmotionMjpeg(emotion_str);
+                    if (display_emotion != emotion_str) {
+                        ESP_LOGI(TAG, "LLM emotion '%s' -> '%s'", emotion_str.c_str(), display_emotion.c_str());
+                    }
+                    last_llm_emotion_tick_ = xTaskGetTickCount();
+                    display->SetEmotion(display_emotion.c_str());
                 });
             }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
@@ -731,12 +805,15 @@ void Application::DismissAlert() {
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
-        display->SetEmotion("idle.mjpeg");
+        ShowIdleEmotion();
         display->SetChatMessage("system", "");
     }
 }
 
-void Application::ToggleChatState() {
+void Application::ToggleChatState(const char* source) {
+    pending_toggle_source_ = source ? source : "unknown";
+    ESP_LOGI(TAG, "ToggleChatState requested: source=%s state=%d",
+             pending_toggle_source_, (int)GetDeviceState());
     xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT);
 }
 
@@ -750,6 +827,9 @@ void Application::StopListening() {
 
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
+    const char* source = pending_toggle_source_;
+    pending_toggle_source_ = "unknown";
+    ESP_LOGI(TAG, "Handle toggle chat: source=%s state=%d", source, (int)state);
     
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
@@ -770,6 +850,7 @@ void Application::HandleToggleChatEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        PrepareVoiceInteraction();
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -795,6 +876,8 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
+            ESP_LOGW(TAG, "Open audio channel failed, returning to idle");
+            SetDeviceState(kDeviceStateIdle);
             return;
         }
     }
@@ -804,6 +887,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 
 void Application::HandleStartListeningEvent() {
     auto state = GetDeviceState();
+    ESP_LOGI(TAG, "Handle start listening event: state=%d", (int)state);
     
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
@@ -820,6 +904,7 @@ void Application::HandleStartListeningEvent() {
     }
     
     if (state == kDeviceStateIdle) {
+        PrepareVoiceInteraction();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
@@ -851,8 +936,34 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
-    if (!protocol_) {
+    constexpr uint32_t kWakeRejectAfterPlaybackMs = 900;
+    auto state_before_prepare = GetDeviceState();
+    if ((state_before_prepare == kDeviceStateIdle ||
+         state_before_prepare == kDeviceStateListening ||
+         state_before_prepare == kDeviceStateSpeaking) &&
+        audio_service_.IsOutputActiveOrRecentlyActive(kWakeRejectAfterPlaybackMs)) {
+        ++rejected_playback_wake_count_;
+        auto now = xTaskGetTickCount();
+        if ((now - last_wake_reject_log_tick_) * portTICK_PERIOD_MS > 3000) {
+            ESP_LOGW(TAG, "Ignore wake word during/recent playback (state=%d, count=%lu)",
+                     (int)state_before_prepare, (unsigned long)rejected_playback_wake_count_);
+            last_wake_reject_log_tick_ = now;
+        }
+        if (state_before_prepare == kDeviceStateIdle && !audio_service_.IsWakeWordRunning()) {
+            audio_service_.EnableWakeWordDetection(true);
+        }
         return;
+    }
+
+    PrepareVoiceInteraction();
+
+    if (!protocol_) {
+        ESP_LOGW(TAG, "Wake word detected before protocol init, initializing protocol");
+        InitializeProtocol();
+        if (!protocol_) {
+            audio_service_.EnableWakeWordDetection(true);
+            return;
+        }
     }
 
     auto state = GetDeviceState();
@@ -860,15 +971,6 @@ void Application::HandleWakeWordDetectedEvent() {
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
     if (state == kDeviceStateIdle) {
-        // 刚进入 idle 的前几秒内忽略唤醒词，防止调整摄像头等物理振动误触发
-        TickType_t now = xTaskGetTickCount();
-        if ((now - idle_entered_tick_) * portTICK_PERIOD_MS < IDLE_WAKEWORD_DEBOUNCE_MS) {
-            ESP_LOGW(TAG, "Wake word suppressed (idle debounce %lu ms)",
-                     (unsigned long)((now - idle_entered_tick_) * portTICK_PERIOD_MS));
-            audio_service_.EnableWakeWordDetection(true);
-            return;
-        }
-
         audio_service_.EncodeWakeWord();
         auto wake_word = audio_service_.GetLastWakeWord();
 
@@ -905,6 +1007,86 @@ void Application::HandleWakeWordDetectedEvent() {
     }
 }
 
+void Application::ShowIdleEmotion() {
+    auto display = Board::GetInstance().GetDisplay();
+    uint32_t session_id = ++idle_emotion_session_id_;
+    audio_service_.EnableWakeWordDetection(false);
+    idle_mjpeg_started_tick_ = xTaskGetTickCount();
+    idle_mjpeg_active_ = true;
+    display->SetEmotion("idle.mjpeg");
+
+    struct IdleEmotionContext {
+        Application* app;
+        uint32_t session_id;
+    };
+    auto* ctx = new IdleEmotionContext{this, session_id};
+    BaseType_t task_ok = xTaskCreate([](void* arg) {
+        auto* ctx = static_cast<IdleEmotionContext*>(arg);
+        Application* app = ctx->app;
+        uint32_t session_id = ctx->session_id;
+        delete ctx;
+
+        vTaskDelay(pdMS_TO_TICKS(kIdleMjpegPrerollMs));
+        app->Schedule([app, session_id]() {
+            app->FinishIdleEmotionPreroll(session_id);
+        });
+        vTaskDelete(NULL);
+    }, "idle_mjpeg_guard", 2048, ctx, 1, nullptr);
+
+    if (task_ok != pdPASS) {
+        delete ctx;
+        ESP_LOGW(TAG, "Failed to create idle MJPEG guard task");
+        FinishIdleEmotionPreroll(session_id);
+    }
+}
+
+void Application::FinishIdleEmotionPreroll(uint32_t session_id) {
+    if (idle_emotion_session_id_ != session_id || GetDeviceState() != kDeviceStateIdle) {
+        return;
+    }
+
+    StopIdleMjpegIfNeeded(true);
+    audio_service_.EnableWakeWordDetection(true);
+}
+
+void Application::StopIdleMjpegIfNeeded(bool force) {
+    if (!idle_mjpeg_active_) {
+        return;
+    }
+    if (!force) {
+        if (GetDeviceState() != kDeviceStateIdle) {
+            idle_mjpeg_active_ = false;
+            return;
+        }
+        TickType_t now = xTaskGetTickCount();
+        if ((now - idle_mjpeg_started_tick_) * portTICK_PERIOD_MS < kIdleMjpegPrerollMs) {
+            return;
+        }
+    }
+
+    idle_mjpeg_active_ = false;
+    auto display = Board::GetInstance().GetDisplay();
+    if (auto lcd_display = dynamic_cast<LcdDisplay*>(display)) {
+        (void)lcd_display->ShowStaticIdleFace();
+    } else {
+        mjpeg_player_port_stop_wait(800);
+        display->SetEmotion("neutral");
+    }
+}
+
+void Application::PrepareVoiceInteraction() {
+    ++idle_emotion_session_id_;
+    idle_mjpeg_active_ = false;
+    posture_start_pending_ = false;
+    posture_light_prompt_sent_ = false;
+    posture_voice_prompt_sent_ = false;
+    if (posture_detector_) {
+        posture_detector_->RequestStop();
+    }
+    mjpeg_player_port_stop_wait(800);
+    Board::GetInstance().GetDisplay()->SetChatMessage("system", "");
+}
+
 void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
@@ -913,7 +1095,8 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
     if (!protocol_->IsAudioChannelOpened()) {
         if (!protocol_->OpenAudioChannel()) {
-            audio_service_.EnableWakeWordDetection(true);
+            ESP_LOGW(TAG, "Open audio channel failed after wake word, returning to idle");
+            SetDeviceState(kDeviceStateIdle);
             return;
         }
     }
@@ -961,17 +1144,17 @@ void Application::HandleStateChangedEvent() {
             posture_start_pending_ = false;
             StopPostureDetection();
             break;
-        case kDeviceStateIdle:
+        case kDeviceStateIdle: {
             display->ClearChatMessages();  // Clear messages first
-            display->SetEmotion("idle.mjpeg"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            ShowIdleEmotion();
             display->UpdateStatusBar(true);
-            posture_start_pending_ = true;
+            posture_start_pending_ = ENABLE_AUTO_POSTURE_DETECTION;
             break;
+        }
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
-            display->SetEmotion("neutral");
+            display->SetEmotion("listen.mjpeg");
             display->SetChatMessage("system", "");
             posture_start_pending_ = false;
             StopPostureDetection();
@@ -1132,6 +1315,7 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
     auto state = GetDeviceState();
     
     if (state == kDeviceStateIdle) {
+        PrepareVoiceInteraction();
         audio_service_.EncodeWakeWord();
 
         if (!protocol_->IsAudioChannelOpened()) {
@@ -1230,6 +1414,19 @@ void Application::ResetProtocol() {
 // ---------------------------------------------------------------------------
 
 void Application::StartPostureDetection() {
+    if (!eye_care_service_.config().posture_enabled) {
+        posture_start_pending_ = false;
+        return;
+    }
+
+    if (GetDeviceState() != kDeviceStateIdle ||
+        !audio_service_.IsWakeWordRunning() ||
+        !audio_service_.IsIdle()) {
+        ESP_LOGW("Application", "Skip posture detection start while voice path is busy");
+        posture_start_pending_ = true;
+        return;
+    }
+
     auto camera = Board::GetInstance().GetCamera();
     if (!camera) return;
 
@@ -1244,7 +1441,7 @@ void Application::StartPostureDetection() {
 
     // Keep posture detection invisible: stop the idle MJPEG decoder to free CPU/PSRAM,
     // but do not change the visible emotion/status or show camera frames.
-    mjpeg_player_port_stop();
+    mjpeg_player_port_stop_wait(800);
 
     posture_detector_->Start(esp_video, [this](const posture_result_t& result) {
         OnPostureResult(result);
@@ -1260,7 +1457,23 @@ void Application::StopPostureDetection() {
 }
 
 void Application::OnPostureResult(const posture_result_t& result) {
+    eye_care_service_.OnPresenceDetected(result.detected);
+
     if (!result.detected || result.posture_type == POSTURE_UNKNOWN) {
+        if (posture_bad_active_) {
+            ESP_LOGI("Application", "坐姿检测无人或无效，清除异常状态");
+        }
+        posture_bad_active_ = false;
+        posture_light_prompt_sent_ = false;
+        posture_voice_prompt_sent_ = false;
+        posture_active_type_ = POSTURE_UNKNOWN;
+        posture_bad_start_tick_ = 0;
+        posture_good_start_tick_ = 0;
+        Schedule([]() {
+            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
+                Board::GetInstance().GetDisplay()->SetChatMessage("system", "");
+            }
+        });
         return;
     }
 
@@ -1281,6 +1494,9 @@ void Application::OnPostureResult(const posture_result_t& result) {
             posture_bad_start_tick_ = 0;
             ESP_LOGI("Application", "坐姿已纠正");
             AdjustPostureHealthScore(2);
+            Schedule([]() {
+                Board::GetInstance().GetDisplay()->SetChatMessage("system", "");
+            });
             if (should_reward) {
                 posture_last_corrected_reward_tick_ = now;
                 SchedulePostureFeedback("很好，坐姿恢复啦，继续保持", "loving.mjpeg", "", 1800);
@@ -1324,6 +1540,16 @@ void Application::OnPostureResult(const posture_result_t& result) {
         Schedule([this, advice]() {
             if (GetDeviceState() != kDeviceStateIdle) return;
             Board::GetInstance().GetDisplay()->SetChatMessage("system", advice);
+            xTaskCreate([](void* arg) {
+                auto* app = static_cast<Application*>(arg);
+                vTaskDelay(pdMS_TO_TICKS(4000));
+                app->Schedule([app]() {
+                    if (app->GetDeviceState() == kDeviceStateIdle) {
+                        Board::GetInstance().GetDisplay()->SetChatMessage("system", "");
+                    }
+                });
+                vTaskDelete(NULL);
+            }, "posture_msg_clear", 2048, this, 1, nullptr);
         });
         return;
     }
@@ -1340,7 +1566,7 @@ void Application::OnPostureResult(const posture_result_t& result) {
         const auto& sound = (result.posture_type == POSTURE_SLOUCHING || result.posture_type == POSTURE_LYING_DOWN)
             ? Lang::Sounds::OGG_POSE2
             : Lang::Sounds::OGG_POSE1;
-        SchedulePostureFeedback(advice, "sad.mjpeg", sound, 3000);
+        SchedulePostureFeedback(advice, "bye.mjpeg", sound, 3000);
         return;
     }
 }
@@ -1369,10 +1595,16 @@ void Application::SchedulePostureFeedback(const char* message, const char* emoti
 
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::WARNING);
-        display->SetEmotion(emotion_copy.c_str());
+        if (audio_service_.IsWakeWordRunning()) {
+            ESP_LOGW(TAG, "Skip posture MJPEG while wake word detection is running");
+        } else {
+            display->SetEmotion(emotion_copy.c_str());
+        }
         display->SetChatMessage("system", message_copy.c_str());
-        if (!sound_copy.empty()) {
+        if (!sound_copy.empty() && audio_service_.IsIdle()) {
             audio_service_.PlaySound(std::string_view(sound_copy.data(), sound_copy.size()));
+        } else if (!sound_copy.empty()) {
+            ESP_LOGW(TAG, "Skip posture prompt sound while audio service is busy");
         }
 
         auto* ctx = new PostureFeedbackRestoreContext{this, restore_delay_ms};
@@ -1385,7 +1617,6 @@ void Application::SchedulePostureFeedback(const char* message, const char* emoti
             app->Schedule([app]() {
                 if (app->GetDeviceState() == kDeviceStateIdle) {
                     app->DismissAlert();
-                    app->idle_entered_tick_ = xTaskGetTickCount();
                     app->posture_start_pending_ = true;
                 }
             });
@@ -1395,8 +1626,113 @@ void Application::SchedulePostureFeedback(const char* message, const char* emoti
             delete ctx;
             ESP_LOGW(TAG, "Failed to create posture feedback restore task");
             DismissAlert();
-            idle_entered_tick_ = xTaskGetTickCount();
             posture_start_pending_ = true;
         }
     });
+}
+
+void Application::HandleEyeCareClockTick() {
+    auto event = eye_care_service_.OnClockTick(GetDeviceState() == kDeviceStateIdle);
+    if (event.type != EyeCareService::EventType::kNone) {
+        ShowEyeCareFeedback(event);
+    }
+}
+
+void Application::ShowEyeCareFeedback(const EyeCareService::Event& event) {
+    if (GetDeviceState() != kDeviceStateIdle || event.message.empty()) {
+        return;
+    }
+
+    auto display = Board::GetInstance().GetDisplay();
+    const uint32_t clear_delay_ms = event.display_ms == 0 ? 3000 : event.display_ms;
+    display->ShowNotification(event.message.c_str(), clear_delay_ms);
+    display->SetChatMessage("system", event.message.c_str());
+
+    if (!event.emotion.empty() &&
+        eye_care_service_.config().screen_video_enabled &&
+        !audio_service_.IsWakeWordRunning()) {
+        display->SetEmotion(event.emotion.c_str());
+    }
+
+    if (event.play_sound && audio_service_.IsIdle()) {
+        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    }
+
+    xTaskCreate([](void* arg) {
+        auto* delay_ms = static_cast<uint32_t*>(arg);
+        uint32_t wait_ms = *delay_ms;
+        delete delay_ms;
+        vTaskDelay(pdMS_TO_TICKS(wait_ms));
+        Application::GetInstance().Schedule([]() {
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                Board::GetInstance().GetDisplay()->SetChatMessage("system", "");
+            }
+        });
+        vTaskDelete(NULL);
+    }, "eye_care_msg", 2048, new uint32_t(clear_delay_ms), 1, nullptr);
+}
+
+cJSON* Application::GetEyeCareStatusJson() {
+    return eye_care_service_.ToJson();
+}
+
+void Application::ConfigureEyeCare(const EyeCareService::Config& config) {
+    eye_care_service_.ApplyConfig(config);
+    if (!eye_care_service_.config().enabled || !eye_care_service_.config().posture_enabled) {
+        posture_start_pending_ = false;
+        StopPostureDetection();
+    } else if (GetDeviceState() == kDeviceStateIdle) {
+        posture_start_pending_ = true;
+    }
+}
+
+void Application::ResetEyeCareDailyStats() {
+    eye_care_service_.ResetDailyStats();
+}
+
+void Application::HandleReminderClockTick() {
+    auto due = reminder_service_.PopDueReminders(time(nullptr));
+    for (const auto& reminder : due) {
+        ShowReminder(reminder);
+    }
+}
+
+void Application::ShowReminder(const ReminderService::DueReminder& reminder) {
+    std::string message = "提醒：" + reminder.content;
+    Schedule([this, message]() {
+        auto display = Board::GetInstance().GetDisplay();
+        display->ShowNotification(message.c_str(), 10000);
+        display->SetChatMessage("system", message.c_str());
+        if (audio_service_.IsIdle()) {
+            audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+        }
+
+        xTaskCreate([](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            app->Schedule([app]() {
+                if (app->GetDeviceState() == kDeviceStateIdle) {
+                    Board::GetInstance().GetDisplay()->SetChatMessage("system", "");
+                }
+            });
+            vTaskDelete(NULL);
+        }, "reminder_clear", 2048, this, 1, nullptr);
+    });
+}
+
+bool Application::AddReminderFromText(const std::string& text, ReminderService::ReminderTask& out) {
+    return reminder_service_.AddFromText(text, out);
+}
+
+bool Application::AddReminderAt(int64_t remind_at, const std::string& content, ReminderService::ReminderTask& out) {
+    return reminder_service_.AddTask(ReminderService::ReminderType::kAbsolute, remind_at, content, "", out);
+}
+
+bool Application::DeleteReminder(uint32_t id) {
+    return reminder_service_.DeleteTask(id);
+}
+
+cJSON* Application::GetRemindersJson() {
+    return reminder_service_.ToJson();
 }

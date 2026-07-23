@@ -19,6 +19,7 @@ typedef struct {
 esp_err_t mjpeg_player_port_init(mjpeg_player_port_config_t *config);
 esp_err_t mjpeg_player_port_play_file(const char *filepath);
 esp_err_t mjpeg_player_port_stop(void);
+esp_err_t mjpeg_player_port_stop_wait(uint32_t timeout_ms);
 void mjpeg_player_port_set_loop(bool enable);
 void mjpeg_player_port_deinit(void);
 

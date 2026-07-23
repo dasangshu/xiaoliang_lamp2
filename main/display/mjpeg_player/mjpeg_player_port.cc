@@ -84,6 +84,45 @@ static bool set_player_state(player_state_t new_state) {
     return success;
 }
 
+static uint32_t target_fps_for_file(const char *filepath) {
+    if (filepath == NULL) {
+        return 6;
+    }
+
+    static const char* kFastMjpegFiles[] = {
+        "talk.mjpeg",
+        "bye.mjpeg",
+        "happy.mjpeg",
+        "laughing.mjpeg",
+        "funny.mjpeg",
+        "sad.mjpeg",
+        "angry.mjpeg",
+        "crying.mjpeg",
+        "loving.mjpeg",
+        "embarrassed.mjpeg",
+        "surprised.mjpeg",
+        "shocked.mjpeg",
+        "thinking.mjpeg",
+        "winking.mjpeg",
+        "cool.mjpeg",
+        "relaxed.mjpeg",
+        "delicious.mjpeg",
+        "kissy.mjpeg",
+        "confident.mjpeg",
+        "sleepy.mjpeg",
+        "silly.mjpeg",
+        "confused.mjpeg",
+        "confuesed.mjpeg",
+    };
+    for (const auto* file : kFastMjpegFiles) {
+        if (strstr(filepath, file) != NULL) {
+            return 15;
+        }
+    }
+
+    return 6;
+}
+
 static esp_err_t safe_stop_player(uint32_t timeout_ms) {
     (void)timeout_ms;
     player_state_t current_state = get_player_state();
@@ -96,7 +135,9 @@ static esp_err_t safe_stop_player(uint32_t timeout_ms) {
     }
 
     esp_err_t ret = mjpeg_player_stop(s_player.handle);
-    set_player_state(PLAYER_STATE_IDLE);
+    if (ret == ESP_OK) {
+        set_player_state(PLAYER_STATE_IDLE);
+    }
     return ret;
 }
 
@@ -156,6 +197,10 @@ static void player_manager_task(void *arg) {
                         ESP_LOGI(TAG, "Already playing: %s", full_path);
                         break;
                     }
+
+                    uint32_t target_fps = target_fps_for_file(full_path);
+                    mjpeg_player_set_target_fps(s_player.handle, target_fps);
+                    ESP_LOGI(TAG, "Target FPS: %u", (unsigned)target_fps);
 
                     esp_err_t ret = mjpeg_player_play_file(s_player.handle, full_path);
                     if (ret == ESP_OK) {
@@ -350,12 +395,21 @@ esp_err_t mjpeg_player_port_stop(void) {
     }
 
     player_task_t task = {.type = PLAYER_TASK_STOP};
-    if (xQueueSend(s_player.task_queue, &task, pdMS_TO_TICKS(1000)) != pdPASS) {
+    if (xQueueSend(s_player.task_queue, &task, 0) != pdPASS) {
         return ESP_FAIL;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(50));
     return ESP_OK;
+}
+
+esp_err_t mjpeg_player_port_stop_wait(uint32_t timeout_ms) {
+    if (s_player.handle == NULL) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = safe_stop_player(timeout_ms);
+    memset(s_player.current_file, 0, sizeof(s_player.current_file));
+    return ret;
 }
 
 void mjpeg_player_port_set_loop(bool enable) {

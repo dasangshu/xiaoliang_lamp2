@@ -5,6 +5,7 @@
 #include <freertos/event_groups.h>
 #include <freertos/task.h>
 #include <esp_timer.h>
+#include <cJSON.h>
 
 #include <string>
 #include <mutex>
@@ -17,6 +18,8 @@
 #include "device_state.h"
 #include "device_state_machine.h"
 #include "posture/posture_detector.h"
+#include "eye_care/eye_care_service.h"
+#include "reminders/reminder_service.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -32,6 +35,7 @@
 #define MAIN_EVENT_START_LISTENING      (1 << 10)
 #define MAIN_EVENT_STOP_LISTENING       (1 << 11)
 #define MAIN_EVENT_STATE_CHANGED        (1 << 12)
+#define MAIN_EVENT_STARTUP_TIMEOUT      (1 << 13)
 
 
 enum AecMode {
@@ -90,7 +94,7 @@ public:
      * Toggle chat state (event-based, thread-safe)
      * Sends MAIN_EVENT_TOGGLE_CHAT to be handled in Run()
      */
-    void ToggleChatState();
+    void ToggleChatState(const char* source = "unknown");
 
     /**
      * Start listening (event-based, thread-safe)
@@ -113,6 +117,14 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    cJSON* GetEyeCareStatusJson();
+    void ConfigureEyeCare(const EyeCareService::Config& config);
+    void ResetEyeCareDailyStats();
+    EyeCareService::Config GetEyeCareConfig() const { return eye_care_service_.config(); }
+    bool AddReminderFromText(const std::string& text, ReminderService::ReminderTask& out);
+    bool AddReminderAt(int64_t remind_at, const std::string& content, ReminderService::ReminderTask& out);
+    bool DeleteReminder(uint32_t id);
+    cJSON* GetRemindersJson();
     
     /**
      * Reset protocol resources (thread-safe)
@@ -136,14 +148,23 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
+    EyeCareService eye_care_service_;
+    ReminderService reminder_service_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+    const char* pending_toggle_source_ = "unknown";
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     uint32_t tts_session_id_ = 0;
+    TickType_t last_llm_emotion_tick_ = 0;
+    uint32_t idle_emotion_session_id_ = 0;
+    TickType_t idle_mjpeg_started_tick_ = 0;
+    bool idle_mjpeg_active_ = false;
+    TickType_t last_wake_reject_log_tick_ = 0;
+    uint32_t rejected_playback_wake_count_ = 0;
 
 
     // Event handlers
@@ -154,7 +175,12 @@ private:
     void HandleNetworkConnectedEvent();
     void HandleNetworkDisconnectedEvent();
     void HandleActivationDoneEvent();
+    void HandleStartupTimeoutEvent();
     void HandleWakeWordDetectedEvent();
+    void ShowIdleEmotion();
+    void FinishIdleEmotionPreroll(uint32_t session_id);
+    void StopIdleMjpegIfNeeded(bool force = false);
+    void PrepareVoiceInteraction();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
 
@@ -175,7 +201,7 @@ private:
     // 坐姿检测
     std::unique_ptr<PostureDetector> posture_detector_;
     TickType_t posture_last_alert_tick_ = 0;
-    static constexpr uint32_t POSTURE_ALERT_INTERVAL_MS = 3 * 60 * 1000;  // 两次语音提醒最短间隔3分钟
+    static constexpr uint32_t POSTURE_ALERT_INTERVAL_MS = 30 * 1000;  // 演示模式：两次语音提醒最短间隔30秒
     int posture_health_score_ = 100;
     bool posture_bad_active_ = false;
     bool posture_light_prompt_sent_ = false;
@@ -186,21 +212,24 @@ private:
     TickType_t posture_last_health_tick_ = 0;
     TickType_t posture_last_corrected_reward_tick_ = 0;
     TickType_t posture_last_good_reward_tick_ = 0;
-    static constexpr uint32_t POSTURE_LIGHT_PROMPT_MS = 20 * 1000;
-    static constexpr uint32_t POSTURE_VOICE_PROMPT_MS = 60 * 1000;
-    static constexpr uint32_t POSTURE_CORRECTED_REWARD_INTERVAL_MS = 2 * 60 * 1000;
-    static constexpr uint32_t POSTURE_GOOD_STREAK_MS = 25 * 60 * 1000;
+    static constexpr uint32_t POSTURE_LIGHT_PROMPT_MS = 5 * 1000;
+    static constexpr uint32_t POSTURE_VOICE_PROMPT_MS = 12 * 1000;
+    static constexpr uint32_t POSTURE_CORRECTED_REWARD_INTERVAL_MS = 30 * 1000;
+    static constexpr uint32_t POSTURE_GOOD_STREAK_MS = 3 * 60 * 1000;
 
-    // 进入 idle 的时刻，用于抑制刚切换时的振动误唤醒
+    // 进入 idle 的时刻，用于延迟后台坐姿检测启动
     TickType_t idle_entered_tick_ = 0;
-    static constexpr uint32_t IDLE_WAKEWORD_DEBOUNCE_MS = 3000;  // idle 后3秒内忽略唤醒词
     bool posture_start_pending_ = false;
-    static constexpr uint32_t POSTURE_IDLE_DELAY_MS = 10000;  // idle 持续10秒后再启动坐姿检测
+    static constexpr uint32_t POSTURE_IDLE_DELAY_MS = 10 * 1000;  // 演示模式：idle 稳定10秒后启动坐姿检测
     void StartPostureDetection();
     void StopPostureDetection();
     void OnPostureResult(const posture_result_t& result);
     void AdjustPostureHealthScore(int delta);
     void SchedulePostureFeedback(const char* message, const char* emotion, const std::string_view& sound, uint32_t restore_delay_ms);
+    void HandleEyeCareClockTick();
+    void ShowEyeCareFeedback(const EyeCareService::Event& event);
+    void HandleReminderClockTick();
+    void ShowReminder(const ReminderService::DueReminder& reminder);
 };
 
 

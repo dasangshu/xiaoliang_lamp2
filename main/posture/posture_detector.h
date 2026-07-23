@@ -26,6 +26,7 @@ static const char* const POSTURE_NAMES[] = {
 struct posture_result_t {
     bool        detected       = false;
     int         person_count   = 0;
+    int         valid_keypoints = 0;
     float       confidence     = 0.f;
     posture_type_t posture_type = POSTURE_UNKNOWN;
     char        status_text[128] = {};
@@ -45,6 +46,7 @@ public:
     // camera 必须是 EspVideo*（或任何具有 Capture/GetFrame* 接口的实例）
     bool Start(void* camera, PostureCallback cb);
     void Stop();
+    void RequestStop();
 
     bool IsRunning() const { return running_; }
 

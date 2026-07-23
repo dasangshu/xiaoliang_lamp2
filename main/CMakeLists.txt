@@ -40,11 +40,13 @@ set(SOURCES "audio/audio_codec.cc"
             "ota.cc"
             "settings.cc"
             "device_state_machine.cc"
+            "eye_care/eye_care_service.cc"
+            "reminders/reminder_service.cc"
             "assets.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "display/mjpeg_player" "audio" "audio/demuxer" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "display/mjpeg_player" "audio" "audio/demuxer" "protocols" "eye_care" "reminders")
 
 # Add board common files
 list(APPEND SOURCES
@@ -478,8 +480,13 @@ elseif(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_10_1)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
 elseif(CONFIG_BOARD_TYPE_ESP_P4_FUNCTION_EV_BOARD)
     set(BOARD_TYPE "esp-p4-function-ev-board")
-elseif(CONFIG_BOARD_TYPE_ESP32P4C5_SANGSHU)
-    set(BOARD_TYPE "esp32p4c5_sangshu")
+elseif(CONFIG_BOARD_TYPE_XIAOLIANG)
+    set(BOARD_TYPE "xiaoliang")
+    set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
+    set(BUILTIN_ICON_FONT font_awesome_30_4)
+    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+elseif(CONFIG_BOARD_TYPE_XIAOLIANG_TOUCH)
+    set(BOARD_TYPE "xiaoliang_touch")
     set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
     set(BUILTIN_ICON_FONT font_awesome_30_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
@@ -938,6 +945,8 @@ idf_component_register(SRCS ${SOURCES}
                         coco_pose
                         esp-dl
                     )
+
+target_add_binary_data(${COMPONENT_LIB} "eye_care/eye_care_rules.json" TEXT)
 
 # Use target_compile_definitions to define BOARD_TYPE, BOARD_NAME
 # If BOARD_NAME is empty, use BOARD_TYPE

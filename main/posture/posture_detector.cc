@@ -243,6 +243,10 @@ void PostureDetector::Stop() {
     // 保留 rgb888_buf_ / resized_buf_ 和已加载的 model_，下次 Start() 直接复用
 }
 
+void PostureDetector::RequestStop() {
+    running_ = false;
+}
+
 // ---------------------------------------------------------------------------
 // ModelLoaderTask
 // ---------------------------------------------------------------------------
@@ -347,8 +351,8 @@ void PostureDetector::CameraTask(void* arg) {
     PostureDetector* self = (PostureDetector*)arg;
     EspVideo* cam = (EspVideo*)self->camera_;
 
-    TickType_t last_send = 0;
-    const TickType_t INTERVAL = pdMS_TO_TICKS(1000);  // 1fps 送检测
+    TickType_t last_capture = 0;
+    const TickType_t INTERVAL = pdMS_TO_TICKS(1500);  // keep posture detection low impact
 
     while (true) {
 
@@ -356,7 +360,14 @@ void PostureDetector::CameraTask(void* arg) {
             break;
         }
 
-        if (!cam->Capture()) {
+        TickType_t now = xTaskGetTickCount();
+        if (now - last_capture < INTERVAL) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        last_capture = now;
+
+        if (!cam->CaptureSilent()) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -370,14 +381,6 @@ void PostureDetector::CameraTask(void* arg) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
-
-        // 只以 1fps 送检测
-        TickType_t now = xTaskGetTickCount();
-        if (now - last_send < INTERVAL) {
-            vTaskDelay(pdMS_TO_TICKS(30));
-            continue;
-        }
-        last_send = now;
 
         // 格式转换 → rgb888_buf_
         if (fmt == V4L2_PIX_FMT_RGB565) {
@@ -411,7 +414,7 @@ void PostureDetector::CameraTask(void* arg) {
         FrameSlot slot = { self->resized_buf_, (uint32_t)TARGET_W, (uint32_t)TARGET_H, true };
         if (self->detect_queue_) xQueueOverwrite(self->detect_queue_, &slot);
 
-        vTaskDelay(pdMS_TO_TICKS(30));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     self->camera_task_ = nullptr;
@@ -476,36 +479,63 @@ void PostureDetector::DetectTask(void* arg) {
         posture_result_t out = {};
         if (!results.empty()) {
             const auto& person = results.front();
-            out.detected     = (person.score > 0.3f);
             out.person_count = (int)results.size();
             out.confidence   = person.score;
 
+            std::vector<int> kp(person.keypoint.begin(), person.keypoint.end());
+            int valid_kp = 0;
+            for (size_t i = 0; i + 1 < kp.size(); i += 2) {
+                if (kp[i] > 0 && kp[i + 1] > 0) valid_kp++;
+            }
+            out.valid_keypoints = valid_kp;
+
+            const int box_left = person.box.size() > 0 ? person.box[0] : 0;
+            const int box_top = person.box.size() > 1 ? person.box[1] : 0;
+            const int box_right = person.box.size() > 2 ? person.box[2] : 0;
+            const int box_bottom = person.box.size() > 3 ? person.box[3] : 0;
+            const int box_w = std::max(0, box_right - box_left);
+            const int box_h = std::max(0, box_bottom - box_top);
+            const float box_area_ratio = (float)(box_w * box_h) / (float)(TARGET_W * TARGET_H);
+
+            auto has_point = [&](int idx) {
+                return idx * 2 + 1 < (int)kp.size() && kp[idx * 2] > 0 && kp[idx * 2 + 1] > 0;
+            };
+            const bool has_core_pose =
+                has_point(0) || has_point(1) || has_point(2) || has_point(3) || has_point(4) ||
+                has_point(5) || has_point(6);
+
+            out.detected = person.score >= 0.55f &&
+                valid_kp >= 5 &&
+                has_core_pose &&
+                box_area_ratio >= 0.08f &&
+                box_w >= 45 &&
+                box_h >= 70;
+
             if (out.detected) {
-                std::vector<int> kp(person.keypoint.begin(), person.keypoint.end());
                 out.posture_type = analyze_posture(kp, person.box);
                 snprintf(out.status_text, sizeof(out.status_text),
                          "%s (%.0f%%)", POSTURE_NAMES[out.posture_type], person.score * 100);
                 static uint32_t posture_debug_count = 0;
                 if ((posture_debug_count++ & 0x0f) == 0) {
-                    int valid_kp = 0;
-                    for (size_t i = 0; i + 1 < kp.size(); i += 2) {
-                        if (kp[i] > 0 && kp[i + 1] > 0) valid_kp++;
-                    }
-                    ESP_LOGI(TAG, "姿态调试: box=[%d,%d,%d,%d] valid_kp=%d/%d type=%s",
-                             person.box.size() > 0 ? person.box[0] : 0,
-                             person.box.size() > 1 ? person.box[1] : 0,
-                             person.box.size() > 2 ? person.box[2] : 0,
-                             person.box.size() > 3 ? person.box[3] : 0,
-                             valid_kp, (int)(kp.size() / 2), POSTURE_NAMES[out.posture_type]);
+                    ESP_LOGI(TAG, "姿态调试: box=[%d,%d,%d,%d] area=%.2f valid_kp=%d/%d type=%s",
+                             box_left, box_top, box_right, box_bottom,
+                             box_area_ratio, valid_kp, (int)(kp.size() / 2), POSTURE_NAMES[out.posture_type]);
                 }
                 ESP_LOGI(TAG, "检测结果: %s", out.status_text);
+            } else {
+                static uint32_t no_person_debug_count = 0;
+                if ((no_person_debug_count++ & 0x0f) == 0) {
+                    ESP_LOGI(TAG, "无人过滤: score=%.2f box=[%d,%d,%d,%d] area=%.2f valid_kp=%d core=%d",
+                             person.score, box_left, box_top, box_right, box_bottom,
+                             box_area_ratio, valid_kp, has_core_pose ? 1 : 0);
+                }
             }
         }
 
         if (self->callback_) self->callback_(out);
 
-        // 检测完给 CPU 让出时间
-        vTaskDelay(pdMS_TO_TICKS(50));
+        // 检测完给 CPU/PSRAM 总线让出时间，优先保证 AFE 唤醒。
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 
     self->detect_task_ = nullptr;

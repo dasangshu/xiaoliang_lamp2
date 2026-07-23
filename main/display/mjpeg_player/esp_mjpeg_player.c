@@ -315,6 +315,15 @@ esp_err_t mjpeg_player_set_loop(mjpeg_player_handle_t handle, bool enable) {
     return ESP_OK;
 }
 
+esp_err_t mjpeg_player_set_target_fps(mjpeg_player_handle_t handle, uint32_t fps) {
+    mjpeg_player_t *player = (mjpeg_player_t *)handle;
+    if (!player) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    player->target_fps = fps > 0 ? fps : 15;
+    return ESP_OK;
+}
+
 esp_err_t mjpeg_player_destroy(mjpeg_player_handle_t handle) {
     mjpeg_player_t *player = (mjpeg_player_t *)handle;
     if (!player) {

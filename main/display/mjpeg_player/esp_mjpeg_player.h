@@ -43,6 +43,7 @@ esp_err_t mjpeg_player_stop(mjpeg_player_handle_t handle);
  * @brief Enable/disable loop playback
  */
 esp_err_t mjpeg_player_set_loop(mjpeg_player_handle_t handle, bool enable);
+esp_err_t mjpeg_player_set_target_fps(mjpeg_player_handle_t handle, uint32_t fps);
 
 /**
  * @brief Destroy player instance

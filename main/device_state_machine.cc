@@ -44,9 +44,11 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
             return to == kDeviceStateStarting;
 
         case kDeviceStateStarting:
-            // Can go to wifi configuring or activating
+            // Can go to wifi configuring, activating, or idle when startup
+            // recovery falls back to local wake-word mode.
             return to == kDeviceStateWifiConfiguring ||
-                   to == kDeviceStateActivating;
+                   to == kDeviceStateActivating ||
+                   to == kDeviceStateIdle;
 
         case kDeviceStateWifiConfiguring:
             // Can go to activating (after wifi connected) or audio testing

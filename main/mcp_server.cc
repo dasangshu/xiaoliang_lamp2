@@ -319,6 +319,107 @@ void McpServer::AddUserOnlyTools() {
                 return true;
             });
     }
+
+    AddUserOnlyTool("self.eye_care.get_status",
+        "Get eye-care status for the parent mini program, including config and today's study/reminder stats.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            return Application::GetInstance().GetEyeCareStatusJson();
+        });
+
+    AddUserOnlyTool("self.eye_care.set_config",
+        "Set the complete eye-care config. The parent mini program should submit all fields together.",
+        PropertyList({
+            Property("enabled", kPropertyTypeBoolean),
+            Property("far_sight_enabled", kPropertyTypeBoolean),
+            Property("daily_knowledge_enabled", kPropertyTypeBoolean),
+            Property("posture_enabled", kPropertyTypeBoolean),
+            Property("screening_enabled", kPropertyTypeBoolean),
+            Property("grip_tip_enabled", kPropertyTypeBoolean),
+            Property("vision_chart_tip_enabled", kPropertyTypeBoolean),
+            Property("science_video_tip_enabled", kPropertyTypeBoolean),
+            Property("screen_video_enabled", kPropertyTypeBoolean),
+            Property("rest_music_enabled", kPropertyTypeBoolean),
+            Property("continuous_use_minutes", kPropertyTypeInteger, 5, 120),
+            Property("far_sight_seconds", kPropertyTypeInteger, 10, 180),
+            Property("absence_reset_seconds", kPropertyTypeInteger, 30, 1800)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            EyeCareService::Config config;
+            config.enabled = properties["enabled"].value<bool>();
+            config.far_sight_enabled = properties["far_sight_enabled"].value<bool>();
+            config.daily_knowledge_enabled = properties["daily_knowledge_enabled"].value<bool>();
+            config.posture_enabled = properties["posture_enabled"].value<bool>();
+            config.screening_enabled = properties["screening_enabled"].value<bool>();
+            config.grip_tip_enabled = properties["grip_tip_enabled"].value<bool>();
+            config.vision_chart_tip_enabled = properties["vision_chart_tip_enabled"].value<bool>();
+            config.science_video_tip_enabled = properties["science_video_tip_enabled"].value<bool>();
+            config.screen_video_enabled = properties["screen_video_enabled"].value<bool>();
+            config.rest_music_enabled = properties["rest_music_enabled"].value<bool>();
+            config.continuous_use_minutes = properties["continuous_use_minutes"].value<int>();
+            config.far_sight_seconds = properties["far_sight_seconds"].value<int>();
+            config.absence_reset_seconds = properties["absence_reset_seconds"].value<int>();
+            Application::GetInstance().ConfigureEyeCare(config);
+            return Application::GetInstance().GetEyeCareStatusJson();
+        });
+
+    AddUserOnlyTool("self.eye_care.reset_daily_stats",
+        "Reset today's eye-care study stats.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            Application::GetInstance().ResetEyeCareDailyStats();
+            return Application::GetInstance().GetEyeCareStatusJson();
+        });
+
+    AddUserOnlyTool("self.reminder.create_from_text",
+        "Create a reminder from Chinese text. Supports examples like '1分钟后提醒我喝水', '明天提醒我', '12月1日提醒我', '下周三提醒我'.",
+        PropertyList({
+            Property("text", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            ReminderService::ReminderTask task;
+            auto text = properties["text"].value<std::string>();
+            if (!Application::GetInstance().AddReminderFromText(text, task)) {
+                throw std::runtime_error("Failed to parse reminder text");
+            }
+            return Application::GetInstance().GetRemindersJson();
+        });
+
+    AddUserOnlyTool("self.reminder.create_at",
+        "Create a reminder with an exact Unix timestamp in seconds and reminder content.",
+        PropertyList({
+            Property("remind_at", kPropertyTypeInteger),
+            Property("content", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            ReminderService::ReminderTask task;
+            int64_t remind_at = properties["remind_at"].value<int>();
+            auto content = properties["content"].value<std::string>();
+            if (!Application::GetInstance().AddReminderAt(remind_at, content, task)) {
+                throw std::runtime_error("Invalid reminder time or content");
+            }
+            return Application::GetInstance().GetRemindersJson();
+        });
+
+    AddUserOnlyTool("self.reminder.list",
+        "List pending and recently fired reminders.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            return Application::GetInstance().GetRemindersJson();
+        });
+
+    AddUserOnlyTool("self.reminder.delete",
+        "Delete a reminder by id.",
+        PropertyList({
+            Property("id", kPropertyTypeInteger)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            int id = properties["id"].value<int>();
+            if (!Application::GetInstance().DeleteReminder(id)) {
+                throw std::runtime_error("Reminder id not found");
+            }
+            return Application::GetInstance().GetRemindersJson();
+        });
 }
 
 void McpServer::AddTool(McpTool* tool) {

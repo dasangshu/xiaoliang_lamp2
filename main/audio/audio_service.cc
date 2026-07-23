@@ -658,6 +658,19 @@ bool AudioService::IsIdle() {
     return audio_encode_queue_.empty() && audio_decode_queue_.empty() && audio_playback_queue_.empty() && audio_testing_queue_.empty();
 }
 
+bool AudioService::IsOutputActiveOrRecentlyActive(uint32_t recent_ms) {
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        if (!audio_decode_queue_.empty() || !audio_playback_queue_.empty()) {
+            return true;
+        }
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
+    return output_elapsed >= 0 && output_elapsed < recent_ms;
+}
+
 void AudioService::WaitForPlaybackQueueEmpty() {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     audio_queue_cv_.wait(lock, [this]() { 

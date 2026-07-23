@@ -1,4 +1,4 @@
-# Build & flash ESP32-C5 esp-hosted SDIO slave for P4 host (esp32p4c5_sangshu)
+# Build & flash ESP32-C5 esp-hosted SDIO slave for P4 host (xiaoliang)
 # Usage: .\scripts\flash_esp32c5_slave.ps1 -Port COMx
 param(
     [Parameter(Mandatory = $true)]
@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $Repo = "$env:TEMP\esp-hosted-mcu"
 $Branch = "release/2.7"
 $SlaveDir = Join-Path $Repo "esp_hosted_slave"
-$Defaults = Join-Path $PSScriptRoot "..\main\boards\esp32p4c5_sangshu\sdkconfig.slave.defaults"
+$Defaults = Join-Path $PSScriptRoot "..\main\boards\xiaoliang\sdkconfig.slave.defaults"
 
 if (-not (Test-Path $Repo)) {
     git clone --depth 1 -b $Branch https://github.com/espressif/esp-hosted-mcu.git $Repo

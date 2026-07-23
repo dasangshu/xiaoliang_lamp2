@@ -130,6 +130,7 @@ endchoice
 
 choice BOARD_TYPE
     prompt "Board Type"
+    default BOARD_TYPE_XIAOLIANG_TOUCH if IDF_TARGET_ESP32P4
     default BOARD_TYPE_BREAD_COMPACT_WIFI
     help
         Board type. 开发板类型
@@ -196,8 +197,11 @@ choice BOARD_TYPE
     config BOARD_TYPE_ESP_P4_FUNCTION_EV_BOARD
         bool "Espressif ESP-P4-Function-EV-Board"
         depends on IDF_TARGET_ESP32P4
-    config BOARD_TYPE_ESP32P4C5_SANGSHU
-        bool "ESP32-P4-C5 Sangshu"
+    config BOARD_TYPE_XIAOLIANG
+        bool "Xiaoliang 3.5 LCD"
+        depends on IDF_TARGET_ESP32P4
+    config BOARD_TYPE_XIAOLIANG_TOUCH
+        bool "Xiaoliang 3.5 Touch LCD"
         depends on IDF_TARGET_ESP32P4
     config BOARD_TYPE_ESP_VOCAT
         bool "Espressif ESP-VoCat"
@@ -776,7 +780,7 @@ config USE_DEVICE_AEC
         || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_3_4C || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_4C || BOARD_TYPE_ESP_S3_LCD_EV_Board_2 || BOARD_TYPE_YUNLIAO_S3 \
         || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_7 || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_8 || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_10_1 \
         || BOARD_TYPE_ESP_VOCAT || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_3_49 || BOARD_TYPE_WAVESHARE_ESP32_S3_RLCD_4_2 || BOARD_TYPE_ZHENGCHEN_CAM || BOARD_TYPE_ZHENGCHEN_CAM_ML307 \
-        || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4_3C || BOARD_TYPE_ESP32P4C5_SANGSHU || BOARD_TYPE_WIRELESS_TAG_WTP4C5MP07S)
+        || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4_3C || BOARD_TYPE_XIAOLIANG || BOARD_TYPE_XIAOLIANG_TOUCH || BOARD_TYPE_WIRELESS_TAG_WTP4C5MP07S)
     help
         To work properly, device-side AEC requires a clean output reference path from the speaker signal and physical acoustic isolation between the microphone and speaker.
 
