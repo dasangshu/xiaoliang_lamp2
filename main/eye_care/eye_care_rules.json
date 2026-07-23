@@ -1,0 +1,77 @@
+{
+  "default_config": {
+    "enabled": true,
+    "far_sight_enabled": true,
+    "daily_knowledge_enabled": true,
+    "posture_enabled": true,
+    "screening_enabled": true,
+    "grip_tip_enabled": true,
+    "vision_chart_tip_enabled": true,
+    "science_video_tip_enabled": true,
+    "screen_video_enabled": true,
+    "rest_music_enabled": false,
+    "continuous_use_minutes": 20,
+    "far_sight_seconds": 20,
+    "absence_reset_seconds": 180
+  },
+  "timing": {
+    "presence_ttl_seconds": 5,
+    "study_start_knowledge_delay_seconds": 10,
+    "min_far_sight_reminder_gap_seconds": 300,
+    "screening_reminder_interval_seconds": 2592000,
+    "grip_tip_delay_seconds": 60,
+    "vision_chart_tip_delay_seconds": 120,
+    "science_video_tip_delay_seconds": 180
+  },
+  "messages": {
+    "study_started": {
+      "text": "开始学习啦，记得坐直，用眼一段时间后我会提醒你远眺",
+      "emotion": "glass.mjpeg",
+      "display_ms": 3000
+    },
+    "far_sight_reminder": {
+      "text": "已经连续用眼一段时间啦，请抬头看6米外，远眺20秒",
+      "emotion": "relaxed.mjpeg",
+      "display_ms": 20000,
+      "play_sound": true
+    },
+    "far_sight_completed": {
+      "text": "远眺休息完成，继续学习时记得保持坐姿",
+      "emotion": "relaxed.mjpeg",
+      "display_ms": 2500
+    },
+    "daily_knowledge": {
+      "emotion": "thinking.mjpeg",
+      "display_ms": 6000
+    },
+    "screening_reminder": {
+      "text": "本月建议安排一次视力筛查，关注左右眼视力变化",
+      "emotion": "thinking.mjpeg",
+      "display_ms": 6000
+    },
+    "grip_posture_tip": {
+      "text": "握笔不要太靠近笔尖，避免挡住视线后低头歪头",
+      "emotion": "bye.mjpeg",
+      "display_ms": 5000
+    },
+    "vision_chart_tip": {
+      "text": "可以在家做一次视力表方向识别练习，结果仅作家庭参考",
+      "emotion": "thinking.mjpeg",
+      "display_ms": 6000
+    },
+    "science_video_tip": {
+      "text": "看一个护眼小动效：坐直、抬头、看远处",
+      "emotion": "baojiancao.mjpeg",
+      "display_ms": 5000
+    }
+  },
+  "daily_knowledge": [
+    "今日护眼小知识：写字时眼睛离书本保持一尺左右，能减少眼疲劳。",
+    "今日护眼小知识：每连续用眼一段时间，要抬头看看远处。",
+    "今日护眼小知识：握笔不要太靠近笔尖，避免挡住视线后低头歪头。",
+    "今日护眼小知识：学习时桌面和环境都要有合适亮度，不要摸黑看书。",
+    "今日护眼小知识：户外活动有助于放松眼睛，白天尽量多到户外走走。",
+    "今日护眼小知识：不要趴着写字，眼睛和书本距离会不自觉变近。",
+    "今日护眼小知识：如果经常眯眼、歪头看东西，建议尽快做视力检查。"
+  ]
+}
