@@ -101,6 +101,7 @@ public:
      * Sends MAIN_EVENT_START_LISTENING to be handled in Run()
      */
     void StartListening();
+    void StartAiScenario(const std::string& title, const std::string& command);
 
     /**
      * Stop listening (event-based, thread-safe)
@@ -155,10 +156,13 @@ private:
     bool aborted_ = false;
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
+    bool continue_listening_after_tts_ = false;
+    std::string pending_ai_scenario_command_;
     const char* pending_toggle_source_ = "unknown";
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
     uint32_t tts_session_id_ = 0;
+    bool tts_audio_active_ = false;
     TickType_t last_llm_emotion_tick_ = 0;
     uint32_t idle_emotion_session_id_ = 0;
     TickType_t idle_mjpeg_started_tick_ = 0;
@@ -183,6 +187,7 @@ private:
     void PrepareVoiceInteraction();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
+    void ContinueAiScenario(const std::string& title, const std::string& command);
 
     // Activation task (runs in background)
     void ActivationTask();

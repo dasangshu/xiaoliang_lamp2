@@ -37,6 +37,7 @@
 #define TAG "XiaoliangTouch"
 
 static SemaphoreHandle_t touch_wake_sem = nullptr;
+static volatile bool touch_wake_press_pending = false;
 
 class XiaoliangTouchBoard : public WifiBoard {
 private:
@@ -507,6 +508,9 @@ private:
 
     static void TouchWakeIsr(void* arg) {
         BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        if (gpio_get_level(TOUCH_WAKE_GPIO) == 0) {
+            touch_wake_press_pending = true;
+        }
         if (touch_wake_sem != nullptr) {
             xSemaphoreGiveFromISR(touch_wake_sem, &xHigherPriorityTaskWoken);
         }
@@ -514,55 +518,38 @@ private:
     }
 
     static void TouchWakeTask(void* arg) {
-        auto* self = static_cast<XiaoliangTouchBoard*>(arg);
+        (void)arg;
         TickType_t last_touch_tick = 0;
         while (true) {
             if (xSemaphoreTake(touch_wake_sem, portMAX_DELAY) != pdTRUE) {
                 continue;
             }
 
-            if (gpio_get_level(TOUCH_WAKE_GPIO) != 0) {
-                continue;
-            }
+            bool pressed = touch_wake_press_pending;
+            touch_wake_press_pending = false;
+            int level = gpio_get_level(TOUCH_WAKE_GPIO);
 
-            bool stable_pressed = true;
-            for (int i = 0; i < 6; ++i) {
-                vTaskDelay(pdMS_TO_TICKS(50));
-                if (gpio_get_level(TOUCH_WAKE_GPIO) != 0) {
-                    stable_pressed = false;
-                    break;
-                }
-            }
-            if (!stable_pressed) {
-                ESP_LOGW(TAG, "Ignore touch wake jitter");
+            if (!pressed && level != 0) {
                 continue;
             }
 
             TickType_t now = xTaskGetTickCount();
-            if ((now - last_touch_tick) * portTICK_PERIOD_MS < 1500) {
-                ESP_LOGW(TAG, "Ignore touch wake bounce/noise");
+            if ((now - last_touch_tick) * portTICK_PERIOD_MS < 250) {
+                ESP_LOGW(TAG, "Ignore touch wake bounce");
                 continue;
             }
             last_touch_tick = now;
 
             auto& app = Application::GetInstance();
             auto& board = static_cast<WifiBoard&>(Board::GetInstance());
+            ESP_LOGI(TAG, "Touch wake press: level=%d state=%d", level, (int)app.GetDeviceState());
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 ESP_LOGI(TAG, "Touch wake: enter WiFi config");
                 board.EnterWifiConfigMode();
             } else {
-                ESP_LOGI(TAG, "Touch wake: open app grid");
-                app.Schedule([self]() {
-                    if (self != nullptr && self->display_ != nullptr) {
-                        self->display_->OpenAppGrid();
-                    }
-                });
+                ESP_LOGI(TAG, "Touch wake: toggle chat state");
+                app.ToggleChatState("touch_wake");
             }
-
-            while (gpio_get_level(TOUCH_WAKE_GPIO) == 0) {
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
-            vTaskDelay(pdMS_TO_TICKS(150));
         }
     }
 

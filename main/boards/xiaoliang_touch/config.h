@@ -6,7 +6,7 @@
 
 #define AUDIO_INPUT_SAMPLE_RATE         24000
 #define AUDIO_OUTPUT_SAMPLE_RATE        24000
-#define AUDIO_INPUT_REFERENCE           true
+#define AUDIO_INPUT_REFERENCE           false
 
 /* ES8311 + ES7210 box audio (I2S0) */
 #define AUDIO_I2S_GPIO_MCLK             GPIO_NUM_7

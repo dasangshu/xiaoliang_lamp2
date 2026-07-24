@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <mutex>
+#include <atomic>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -131,6 +132,8 @@ public:
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
+    bool PlayAudioFile(const char* path);
+    void RunLocalAudioFileTask(const char* path, uint32_t generation);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
@@ -180,6 +183,7 @@ private:
     bool voice_detected_ = false;
     bool service_stopped_ = true;
     bool audio_input_need_warmup_ = false;
+    std::atomic<uint32_t> local_playback_generation_{0};
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

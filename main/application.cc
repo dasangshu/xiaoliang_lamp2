@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 
 #define TAG "Application"
-#define ENABLE_AUTO_POSTURE_DETECTION 1
+#define ENABLE_AUTO_POSTURE_DETECTION 0
 
 namespace {
 constexpr uint32_t kIdleMjpegPrerollMs = 1000;
@@ -119,7 +119,7 @@ void Application::Initialize() {
         .core_id = -1,     // let the scheduler place MJPEG; do not pin heavy JPEG decode to CPU0
         .use_psram = true,
         .task_priority = 1,    // keep MJPEG below audio and wake-word paths
-        .target_fps = 30
+        .target_fps = 12
     };
     mjpeg_player_port_init(&mjpeg_config);
 
@@ -604,7 +604,7 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+        if (tts_audio_active_ || GetDeviceState() == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -632,6 +632,7 @@ void Application::InitializeProtocol() {
         if (strcmp(type->valuestring, "tts") == 0) {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
+                tts_audio_active_ = true;
                 Schedule([this]() {
                     aborted_ = false;
                     tts_session_id_++;
@@ -652,6 +653,7 @@ void Application::InitializeProtocol() {
                             uint32_t wait_session_id = ctx->session_id;
                             delete ctx;
                             app->audio_service_.WaitForPlaybackQueueEmpty();
+                            app->tts_audio_active_ = false;
                             TickType_t last_emotion_tick = app->last_llm_emotion_tick_;
                             if (last_emotion_tick != 0) {
                                 TickType_t elapsed = xTaskGetTickCount() - last_emotion_tick;
@@ -665,7 +667,11 @@ void Application::InitializeProtocol() {
                                     app->GetDeviceState() != kDeviceStateSpeaking) {
                                     return;
                                 }
-                                if (app->listening_mode_ == kListeningModeManualStop) {
+                                if (app->continue_listening_after_tts_) {
+                                    app->continue_listening_after_tts_ = false;
+                                    app->play_popup_on_listening_ = true;
+                                    app->SetDeviceState(kDeviceStateListening);
+                                } else if (app->listening_mode_ == kListeningModeManualStop) {
                                     app->SetDeviceState(kDeviceStateIdle);
                                 } else {
                                     app->SetDeviceState(kDeviceStateListening);
@@ -819,6 +825,39 @@ void Application::ToggleChatState(const char* source) {
 
 void Application::StartListening() {
     xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING);
+}
+
+void Application::StartAiScenario(const std::string& title, const std::string& command) {
+    Schedule([this, title, command]() {
+        if (!protocol_) {
+            ESP_LOGE(TAG, "Protocol not initialized");
+            return;
+        }
+
+        auto state = GetDeviceState();
+        if (state == kDeviceStateActivating) {
+            SetDeviceState(kDeviceStateIdle);
+            state = GetDeviceState();
+        } else if (state == kDeviceStateSpeaking) {
+            AbortSpeaking(kAbortReasonNone);
+            SetDeviceState(kDeviceStateIdle);
+            state = GetDeviceState();
+        } else if (state != kDeviceStateIdle && state != kDeviceStateListening) {
+            ESP_LOGW(TAG, "Cannot start AI scenario from state=%d", (int)state);
+            return;
+        }
+
+        PrepareVoiceInteraction();
+        if (!protocol_->IsAudioChannelOpened()) {
+            SetDeviceState(kDeviceStateConnecting);
+            Schedule([this, title, command]() {
+                ContinueAiScenario(title, command);
+            });
+            return;
+        }
+
+        ContinueAiScenario(title, command);
+    });
 }
 
 void Application::StopListening() {
@@ -1010,9 +1049,9 @@ void Application::HandleWakeWordDetectedEvent() {
 void Application::ShowIdleEmotion() {
     auto display = Board::GetInstance().GetDisplay();
     uint32_t session_id = ++idle_emotion_session_id_;
-    audio_service_.EnableWakeWordDetection(false);
     idle_mjpeg_started_tick_ = xTaskGetTickCount();
     idle_mjpeg_active_ = true;
+    audio_service_.EnableWakeWordDetection(false);
     display->SetEmotion("idle.mjpeg");
 
     struct IdleEmotionContext {
@@ -1046,6 +1085,7 @@ void Application::FinishIdleEmotionPreroll(uint32_t session_id) {
     }
 
     idle_mjpeg_active_ = false;
+    ESP_LOGI(TAG, "Idle MJPEG preroll finished, enabling wake word");
     audio_service_.EnableWakeWordDetection(true);
 }
 
@@ -1115,6 +1155,30 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 #endif
 }
 
+void Application::ContinueAiScenario(const std::string& title, const std::string& command) {
+    auto state = GetDeviceState();
+    if (state != kDeviceStateConnecting && state != kDeviceStateIdle && state != kDeviceStateListening) {
+        return;
+    }
+
+    if (!protocol_->IsAudioChannelOpened()) {
+        if (!protocol_->OpenAudioChannel()) {
+            ESP_LOGW(TAG, "Open audio channel failed for AI scenario, returning to idle");
+            SetDeviceState(kDeviceStateIdle);
+            return;
+        }
+    }
+
+    ESP_LOGI(TAG, "Start AI scenario: %s", title.c_str());
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetChatMessage("system", title.c_str());
+
+    continue_listening_after_tts_ = true;
+    pending_ai_scenario_command_ = command;
+    play_popup_on_listening_ = true;
+    SetListeningMode(kListeningModeManualStop);
+}
+
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
     clock_ticks_ = 0;
@@ -1161,6 +1225,9 @@ void Application::HandleStateChangedEvent() {
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
+                bool should_play_popup = play_popup_on_listening_;
+                play_popup_on_listening_ = false;
+
                 // For auto mode, wait for playback queue to be empty before enabling voice processing
                 // This prevents audio truncation when STOP arrives late due to network jitter
                 if (listening_mode_ == kListeningModeAutoStop) {
@@ -1168,6 +1235,14 @@ void Application::HandleStateChangedEvent() {
                 }
                 
                 // Send the start listening command
+                protocol_->SendStartListening(listening_mode_);
+                audio_service_.EnableVoiceProcessing(true);
+
+                if (should_play_popup) {
+                    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+                }
+            } else if (!pending_ai_scenario_command_.empty()) {
+                ESP_LOGI(TAG, "Restart voice processing before AI scenario command");
                 protocol_->SendStartListening(listening_mode_);
                 audio_service_.EnableVoiceProcessing(true);
             }
@@ -1180,10 +1255,11 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableWakeWordDetection(false);
 #endif
             
-            // Play popup sound after ResetDecoder (in EnableVoiceProcessing) has been called
-            if (play_popup_on_listening_) {
-                play_popup_on_listening_ = false;
-                audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+            if (!pending_ai_scenario_command_.empty()) {
+                auto command = std::move(pending_ai_scenario_command_);
+                pending_ai_scenario_command_.clear();
+                ESP_LOGI(TAG, "Send AI scenario command after listening is ready: %s", command.c_str());
+                protocol_->SendTextInput(command);
             }
             break;
         case kDeviceStateSpeaking:

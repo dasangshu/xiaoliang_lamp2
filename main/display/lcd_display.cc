@@ -6,6 +6,7 @@
 
 #include <vector>
 #include <algorithm>
+#include <string>
 #include <font_awesome.h>
 #include <esp_log.h>
 #include <esp_err.h>
@@ -24,6 +25,14 @@
 #define DISABLE_MJPEG_EMOTIONS 0
 
 namespace {
+constexpr uint32_t kSurfaceBg = 0xF3F6F4;
+constexpr uint32_t kSurfaceCard = 0xFFFFFF;
+constexpr uint32_t kTextPrimary = 0x15231F;
+constexpr uint32_t kTextSecondary = 0x60736B;
+constexpr uint32_t kBorderSoft = 0xD9E4DF;
+constexpr lv_coord_t kPagePad = 14;
+constexpr lv_coord_t kCardRadius = 8;
+
 bool FileExists(const char* path) {
     struct stat st;
     return path != nullptr && stat(path, &st) == 0;
@@ -44,22 +53,112 @@ bool ReadTextFile(const char* path, std::string& out) {
     return true;
 }
 
-int CountMusicTracksFromManifest() {
+struct MusicSceneItem {
+    std::string scene;
+    std::string track_name;
+    std::string path;
+    int track_count = 0;
+    int duration_seconds = 0;
+};
+
+struct AiScenarioItem {
+    const char* title;
+    const char* description;
+    const char* category;
+    const char* icon;
+    const char* command;
+    const char* prompt;
+};
+
+const char* MusicSceneIcon(const std::string& scene) {
+    if (scene.find("睡") != std::string::npos) {
+        return FONT_AWESOME_MOON;
+    }
+    if (scene.find("雨") != std::string::npos) {
+        return FONT_AWESOME_CLOUD_RAIN;
+    }
+    if (scene.find("自然") != std::string::npos) {
+        return FONT_AWESOME_CLOUD_SUN;
+    }
+    if (scene.find("专注") != std::string::npos || scene.find("冥想") != std::string::npos) {
+        return FONT_AWESOME_HEADPHONES;
+    }
+    return FONT_AWESOME_MUSIC;
+}
+
+std::vector<MusicSceneItem> LoadMusicScenesFromManifest(int* track_count, int* parse_status) {
+    if (track_count != nullptr) {
+        *track_count = 0;
+    }
+    if (parse_status != nullptr) {
+        *parse_status = 0;
+    }
+
     std::string json;
     if (!ReadTextFile("/sdcard/yinyuehe/manifest.json", json)) {
-        return -1;
+        if (parse_status != nullptr) {
+            *parse_status = -1;
+        }
+        return {};
     }
+
     cJSON* root = cJSON_ParseWithLength(json.data(), json.size());
     if (root == nullptr) {
-        return -2;
+        if (parse_status != nullptr) {
+            *parse_status = -2;
+        }
+        return {};
     }
+
     cJSON* tracks = cJSON_GetObjectItem(root, "tracks");
     if (tracks == nullptr) {
         tracks = cJSON_GetObjectItem(root, "items");
     }
-    const int count = cJSON_IsArray(tracks) ? cJSON_GetArraySize(tracks) : 0;
+    std::vector<MusicSceneItem> scenes;
+    if (!cJSON_IsArray(tracks)) {
+        cJSON_Delete(root);
+        return scenes;
+    }
+
+    const int count = cJSON_GetArraySize(tracks);
+    if (track_count != nullptr) {
+        *track_count = count;
+    }
+
+    cJSON* track = nullptr;
+    cJSON_ArrayForEach(track, tracks) {
+        cJSON* name = cJSON_GetObjectItem(track, "name");
+        cJSON* display_name = cJSON_GetObjectItem(track, "display_name");
+        cJSON* path = cJSON_GetObjectItem(track, "sdcard_path");
+        cJSON* duration = cJSON_GetObjectItem(track, "duration_seconds");
+        if (!cJSON_IsString(path) || path->valuestring == nullptr) {
+            continue;
+        }
+
+        MusicSceneItem item;
+        if (cJSON_IsString(name) && name->valuestring != nullptr) {
+            item.scene = name->valuestring;
+        } else if (cJSON_IsString(display_name) && display_name->valuestring != nullptr) {
+            item.scene = display_name->valuestring;
+        } else {
+            item.scene = "主题场景";
+        }
+        if (cJSON_IsString(display_name) && display_name->valuestring != nullptr) {
+            item.track_name = display_name->valuestring;
+        } else {
+            item.track_name = item.scene;
+        }
+        item.path = path->valuestring;
+        item.track_count = 1;
+        item.duration_seconds = cJSON_IsNumber(duration) ? duration->valueint : 0;
+        scenes.push_back(std::move(item));
+    }
     cJSON_Delete(root);
-    return count;
+
+    std::sort(scenes.begin(), scenes.end(), [](const MusicSceneItem& a, const MusicSceneItem& b) {
+        return a.scene < b.scene;
+    });
+    return scenes;
 }
 
 constexpr const char* kPetSettingsNamespace = "pet";
@@ -183,16 +282,97 @@ const char* const kMoreActions[] = {
 };
 
 const XiaoliangAppModule kXiaoliangModules[] = {
-    {XiaoliangAppModule::Kind::kTask, FONT_AWESOME_CLOCK, "任务", "定时任务和提醒", kTaskActions, sizeof(kTaskActions) / sizeof(kTaskActions[0])},
-    {XiaoliangAppModule::Kind::kEyeIsland, FONT_AWESOME_GLASSES, "护眼岛", "科普 预约 报告", kEyeIslandActions, sizeof(kEyeIslandActions) / sizeof(kEyeIslandActions[0])},
-    {XiaoliangAppModule::Kind::kPet, FONT_AWESOME_GAMEPAD, "萌宠乐园", "宠物 喂养 换肤", kPetActions, sizeof(kPetActions) / sizeof(kPetActions[0])},
-    {XiaoliangAppModule::Kind::kMusic, FONT_AWESOME_MUSIC, "音乐盒", "23种场景音乐", kMusicActions, sizeof(kMusicActions) / sizeof(kMusicActions[0])},
-    {XiaoliangAppModule::Kind::kAiSpeaking, FONT_AWESOME_COMMENT, "AI听说", "场景化对话", kAiSpeakActions, sizeof(kAiSpeakActions) / sizeof(kAiSpeakActions[0])},
-    {XiaoliangAppModule::Kind::kHealth, FONT_AWESOME_HEART, "健康提醒", "护眼与习惯打卡", kHealthActions, sizeof(kHealthActions) / sizeof(kHealthActions[0])},
-    {XiaoliangAppModule::Kind::kAlbum, FONT_AWESOME_IMAGE, "表情相册", "照片和动画素材", kAlbumActions, sizeof(kAlbumActions) / sizeof(kAlbumActions[0])},
-    {XiaoliangAppModule::Kind::kDevice, FONT_AWESOME_GEAR, "设备设置", "亮度 音量 网络", kDeviceActions, sizeof(kDeviceActions) / sizeof(kDeviceActions[0])},
-    {XiaoliangAppModule::Kind::kMore, FONT_AWESOME_STAR, "更多", "后续模块入口", kMoreActions, sizeof(kMoreActions) / sizeof(kMoreActions[0])},
+    {XiaoliangAppModule::Kind::kTask, FONT_AWESOME_CLOCK, "任务", "提醒日程", kTaskActions, sizeof(kTaskActions) / sizeof(kTaskActions[0])},
+    {XiaoliangAppModule::Kind::kEyeIsland, FONT_AWESOME_GLASSES, "护眼岛", "用眼守护", kEyeIslandActions, sizeof(kEyeIslandActions) / sizeof(kEyeIslandActions[0])},
+    {XiaoliangAppModule::Kind::kPet, FONT_AWESOME_GAMEPAD, "萌宠", "皮肤表情", kPetActions, sizeof(kPetActions) / sizeof(kPetActions[0])},
+    {XiaoliangAppModule::Kind::kMusic, FONT_AWESOME_MUSIC, "音乐盒", "主题音频", kMusicActions, sizeof(kMusicActions) / sizeof(kMusicActions[0])},
+    {XiaoliangAppModule::Kind::kAiSpeaking, FONT_AWESOME_COMMENT, "AI听说", "场景对话", kAiSpeakActions, sizeof(kAiSpeakActions) / sizeof(kAiSpeakActions[0])},
+    {XiaoliangAppModule::Kind::kHealth, FONT_AWESOME_HEART, "健康", "饮水休息", kHealthActions, sizeof(kHealthActions) / sizeof(kHealthActions[0])},
+    {XiaoliangAppModule::Kind::kAlbum, FONT_AWESOME_IMAGE, "表情", "动画素材", kAlbumActions, sizeof(kAlbumActions) / sizeof(kAlbumActions[0])},
+    {XiaoliangAppModule::Kind::kDevice, FONT_AWESOME_GEAR, "设置", "设备资源", kDeviceActions, sizeof(kDeviceActions) / sizeof(kDeviceActions[0])},
+    {XiaoliangAppModule::Kind::kMore, FONT_AWESOME_STAR, "更多", "扩展能力", kMoreActions, sizeof(kMoreActions) / sizeof(kMoreActions[0])},
 };
+
+const XiaoliangAppModule* FindModule(XiaoliangAppModule::Kind kind) {
+    for (const auto& module : kXiaoliangModules) {
+        if (module.kind == kind) {
+            return &module;
+        }
+    }
+    return nullptr;
+}
+
+const char* ModuleSummary(XiaoliangAppModule::Kind kind) {
+    switch (kind) {
+        case XiaoliangAppModule::Kind::kTask:
+            return "快速创建提醒，查看下一件事";
+        case XiaoliangAppModule::Kind::kEyeIsland:
+            return "护眼分、远眺和坐姿状态";
+        case XiaoliangAppModule::Kind::kPet:
+            return "切换皮肤，预览表情动画";
+        case XiaoliangAppModule::Kind::kMusic:
+            return "22 个主题音频，一点即播";
+        case XiaoliangAppModule::Kind::kAiSpeaking:
+            return "角色扮演和生活口语训练";
+        case XiaoliangAppModule::Kind::kHealth:
+            return "饮水、休息和健康节奏";
+        case XiaoliangAppModule::Kind::kAlbum:
+            return "检查 idle/listen/talk 动画";
+        case XiaoliangAppModule::Kind::kDevice:
+            return "亮度、音量、网络和资源";
+        case XiaoliangAppModule::Kind::kMore:
+            return "成长档案、家长控制预留";
+    }
+    return "";
+}
+
+uint32_t ModuleAccentColor(XiaoliangAppModule::Kind kind) {
+    switch (kind) {
+        case XiaoliangAppModule::Kind::kTask:
+            return 0x1D6B5F;
+        case XiaoliangAppModule::Kind::kEyeIsland:
+            return 0x2F7D5C;
+        case XiaoliangAppModule::Kind::kPet:
+            return 0xB66A2C;
+        case XiaoliangAppModule::Kind::kMusic:
+            return 0x335C81;
+        case XiaoliangAppModule::Kind::kAiSpeaking:
+            return 0x6A4C93;
+        case XiaoliangAppModule::Kind::kHealth:
+            return 0x9A5B36;
+        case XiaoliangAppModule::Kind::kAlbum:
+            return 0x4F6F52;
+        case XiaoliangAppModule::Kind::kDevice:
+            return 0x2F4858;
+        case XiaoliangAppModule::Kind::kMore:
+            return 0x5F5B6B;
+    }
+    return 0x1D6B5F;
+}
+
+uint32_t ModuleTintColor(XiaoliangAppModule::Kind kind) {
+    switch (kind) {
+        case XiaoliangAppModule::Kind::kTask:
+            return 0xE4F2EE;
+        case XiaoliangAppModule::Kind::kEyeIsland:
+            return 0xE7F3EA;
+        case XiaoliangAppModule::Kind::kPet:
+            return 0xFFF0DC;
+        case XiaoliangAppModule::Kind::kMusic:
+            return 0xE7EEF6;
+        case XiaoliangAppModule::Kind::kAiSpeaking:
+            return 0xEFE8F7;
+        case XiaoliangAppModule::Kind::kHealth:
+            return 0xF8EDE5;
+        case XiaoliangAppModule::Kind::kAlbum:
+            return 0xEAF2E9;
+        case XiaoliangAppModule::Kind::kDevice:
+            return 0xE7EEF1;
+        case XiaoliangAppModule::Kind::kMore:
+            return 0xECECF2;
+    }
+    return 0xE4F2EE;
+}
 
 const QuickTimerPreset kQuickTimerPresets[] = {
     {15, "15分钟", "护眼休息"},
@@ -230,6 +410,48 @@ const char* const kAiDescriptions[] = {
     "完成后显示轮次、完成度和鼓励反馈。",
 };
 const char* const kAiIcons[] = {FONT_AWESOME_COMMENT, FONT_AWESOME_COMMENT_QUESTION, FONT_AWESOME_STAR};
+
+const AiScenarioItem kAiScenarios[] = {
+    {"和李白聊古诗", "诗人角色对话，聊月亮、山水和想象。", "角色对话", FONT_AWESOME_STAR,
+     "李白古诗",
+     "你现在扮演李白，用适合儿童理解的中文和我聊天。围绕古诗、想象、月亮、山水展开；每次回答不超过60字，并主动问我一个问题。"},
+    {"和孙悟空聊天", "神话角色对话，训练表达和追问。", "角色对话", FONT_AWESOME_GAMEPAD,
+     "孙悟空聊天",
+     "你现在扮演孙悟空，语气活泼勇敢，但不要吓人。和我聊冒险、朋友、勇气和解决问题；每次回答不超过60字，并问我下一步想怎么做。"},
+    {"伤害报警请求", "练习说清位置、情况和求助信息。", "安全求助", FONT_AWESOME_TRIANGLE_EXCLAMATION,
+     "伤害报警",
+     "你扮演紧急求助接线员，带我练习伤害报警请求。先问我是否安全、在哪里、发生了什么、有没有受伤；语言简短冷静，提醒真实危险要马上联系家长或当地急救。"},
+    {"去音乐节", "练习询问时间、票价、路线和入场规则。", "出行娱乐", FONT_AWESOME_MUSIC,
+     "去音乐节",
+     "你扮演音乐节工作人员，我来练习去音乐节的对话。请先问我想看哪类演出，再引导我询问时间、票价、路线、入场规则；每次只说一两句。"},
+    {"参观博物馆", "像讲解员一样介绍展品并提问。", "出行娱乐", FONT_AWESOME_IMAGE,
+     "参观博物馆",
+     "你扮演博物馆讲解员，带我参观博物馆。请先欢迎我并问我喜欢历史、科学还是艺术；介绍要简单生动，每次回答后问一个观察问题。"},
+    {"买电脑", "练习预算、用途、配置和售后表达。", "购物服务", FONT_AWESOME_MICROCHIP_AI,
+     "买电脑",
+     "你扮演电脑店员，我来练习买电脑。请先问我的预算和用途，再解释学习、画画、游戏、视频会议需要关注的配置；每次回答不超过70字。"},
+    {"药店买药", "练习描述症状，并加入安全提醒。", "健康生活", FONT_AWESOME_HEART,
+     "药店买药",
+     "你扮演药店店员，我来练习买药对话。请先问我哪里不舒服，提醒我严重症状要找医生或告诉家长；每次只说一两句，等我回答。"},
+    {"博物馆买票", "练习票种、优惠、开放时间和取票。", "买票办事", FONT_AWESOME_CALENDAR,
+     "博物馆买票",
+     "你扮演博物馆售票员，我来练习买票。请先问我要哪一天、几个人，再引导我询问儿童票、开放时间、取票方式和注意事项。"},
+    {"买电影票", "练习选影片、场次、座位和付款。", "买票办事", FONT_AWESOME_PLAY,
+     "买电影票",
+     "你扮演电影院售票员，我来练习买电影票。请先问我想看什么电影和时间，再引导我选择场次、座位、票数和付款方式。"},
+    {"美甲", "练习预约、颜色、款式和价格。", "购物服务", FONT_AWESOME_PEN_TO_SQUARE,
+     "美甲预约",
+     "你扮演美甲店店员，我来练习预约美甲。请先问我想预约哪天，再聊颜色、款式、价格和护理注意事项；语气友好简短。"},
+    {"护照检查", "练习边检问答，回答清楚不紧张。", "出行办事", FONT_AWESOME_GLOBE,
+     "护照检查",
+     "你扮演护照检查工作人员，我来练习过关问答。请依次询问旅行目的、停留时间、住在哪里、是否带违禁物品；语气正式但友好。"},
+    {"乘地铁", "练习问路、买票、换乘和出站。", "出行办事", FONT_AWESOME_LOCATION_ARROW,
+     "乘地铁",
+     "你扮演地铁站工作人员，我来练习乘地铁。请先问我要去哪里，再教我买票、看线路、换乘和出站；每轮只问一个问题。"},
+    {"看牙医", "练习描述牙痛、检查和治疗建议。", "健康生活", FONT_AWESOME_GLASSES,
+     "看牙医",
+     "你扮演牙医，我来练习看牙医。请先问我哪里不舒服、疼多久了，再解释检查、刷牙和少吃糖的建议；避免恐吓，每次回答简短。"},
+};
 
 const char* const kHealthMetrics[] = {"健康分 91", "饮水 3次", "休息 2次"};
 const char* const kHealthDescriptions[] = {
@@ -622,6 +844,77 @@ void LcdDisplay::OpenAppGrid() {
     ShowAppGrid();
 }
 
+lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const char* subtitle,
+                                      lv_color_t back_bg_color, lv_color_t text_color, lv_color_t subtext_color) {
+    (void)back_bg_color;
+    LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = lvgl_theme->text_font()->font();
+    auto icon_font = lvgl_theme->icon_font()->font();
+
+    lv_obj_t* header = lv_obj_create(parent);
+    lv_obj_set_size(header, LV_HOR_RES - kPagePad * 2, 64);
+    lv_obj_set_style_radius(header, 0, 0);
+    lv_obj_set_style_bg_color(header, lv_color_hex(kSurfaceBg), 0);
+    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* back = lv_obj_create(header);
+    lv_obj_set_size(back, 48, 48);
+    lv_obj_set_style_radius(back, kCardRadius, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(kSurfaceCard), 0);
+    lv_obj_set_style_border_width(back, 1, 0);
+    lv_obj_set_style_border_color(back, lv_color_hex(kBorderSoft), 0);
+    lv_obj_set_style_pad_all(back, 0, 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(back, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* back_label = lv_label_create(back);
+    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
+    lv_obj_set_style_text_font(back_label, icon_font, 0);
+    lv_obj_set_style_text_color(back_label, text_color, 0);
+    lv_obj_center(back_label);
+
+    lv_obj_t* title_box = lv_obj_create(header);
+    lv_obj_set_size(title_box, LV_HOR_RES - 132, 56);
+    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(title_box, 0, 0);
+    lv_obj_set_style_pad_left(title_box, 12, 0);
+    lv_obj_set_style_pad_right(title_box, 0, 0);
+    lv_obj_set_style_pad_top(title_box, 5, 0);
+    lv_obj_set_style_pad_bottom(title_box, 0, 0);
+    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(title_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t* title_label = lv_label_create(title_box);
+    lv_label_set_text(title_label, title);
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(title_label, LV_HOR_RES - 150);
+    lv_obj_set_style_text_font(title_label, text_font, 0);
+    lv_obj_set_style_transform_scale(title_label, 210, 0);
+    lv_obj_set_style_text_color(title_label, text_color, 0);
+
+    if (subtitle != nullptr && subtitle[0] != '\0') {
+        lv_obj_t* subtitle_label = lv_label_create(title_box);
+        lv_label_set_text(subtitle_label, subtitle);
+        lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(subtitle_label, LV_HOR_RES - 150);
+        lv_obj_set_style_text_color(subtitle_label, subtext_color, 0);
+        lv_obj_set_style_margin_top(subtitle_label, 2, 0);
+    }
+
+    lv_obj_t* right_space = lv_obj_create(header);
+    lv_obj_set_size(right_space, 48, 48);
+    lv_obj_set_style_bg_opa(right_space, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(right_space, 0, 0);
+    lv_obj_clear_flag(right_space, LV_OBJ_FLAG_CLICKABLE);
+
+    return header;
+}
+
 void LcdDisplay::OnAppGridCloseClicked(lv_event_t* event) {
     auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
     if (display != nullptr) {
@@ -681,6 +974,51 @@ void LcdDisplay::OnAppActionClicked(lv_event_t* event) {
     }
 }
 
+void LcdDisplay::OnMusicSceneClicked(lv_event_t* event) {
+    auto code = lv_event_get_code(event);
+    auto* target = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
+    auto* item = target != nullptr ? static_cast<MusicSceneItem*>(lv_obj_get_user_data(target)) : nullptr;
+    if (code == LV_EVENT_DELETE) {
+        delete item;
+        return;
+    }
+    if (code != LV_EVENT_CLICKED || item == nullptr) {
+        return;
+    }
+
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    bool started = Application::GetInstance().GetAudioService().PlayAudioFile(item->path.c_str());
+    char message[128];
+    if (started) {
+        snprintf(message, sizeof(message), "正在播放：%s", item->track_name.c_str());
+    } else {
+        snprintf(message, sizeof(message), "无法播放：请检查 SD 卡音频文件");
+    }
+    if (display != nullptr) {
+        display->ShowNotification(message, 2600);
+    }
+}
+
+void LcdDisplay::OnAiScenarioClicked(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+        return;
+    }
+
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    auto* target = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
+    auto* scenario = target != nullptr ? static_cast<const AiScenarioItem*>(lv_obj_get_user_data(target)) : nullptr;
+    if (scenario == nullptr) {
+        return;
+    }
+
+    Application::GetInstance().StartAiScenario(scenario->title, scenario->command);
+    if (display != nullptr) {
+        char message[128];
+        snprintf(message, sizeof(message), "进入场景：%s", scenario->title);
+        display->ShowNotification(message, 2600);
+    }
+}
+
 void LcdDisplay::ShowActionDetail(const char* action_name) {
     const char* title = action_name != nullptr ? action_name : "功能详情";
     const char* body = "该功能已接入触摸页面，真实服务未就绪时展示演示数据，后续可直接替换数据来源。";
@@ -736,9 +1074,6 @@ void LcdDisplay::ShowActionDetail(const char* action_name) {
     }
 
     DisplayLockGuard lock(this);
-    LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-    auto text_font = lvgl_theme->text_font()->font();
-    auto icon_font = lvgl_theme->icon_font()->font();
     lv_obj_t* screen = lv_screen_active();
 
     if (app_detail_layer_ != nullptr) {
@@ -752,82 +1087,67 @@ void LcdDisplay::ShowActionDetail(const char* action_name) {
     app_detail_layer_ = lv_obj_create(screen);
     lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_radius(app_detail_layer_, 0, 0);
-    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF6F8F7), 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(kSurfaceBg), 0);
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
-    lv_obj_set_style_pad_all(app_detail_layer_, 12, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
 
-    lv_obj_t* header = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(header, LV_HOR_RES - 24, 56);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* back = lv_obj_create(header);
-    lv_obj_set_size(back, 50, 44);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0xE4ECE8), 0);
-    lv_obj_set_style_border_width(back, 0, 0);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(back, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* back_label = lv_label_create(back);
-    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
-    lv_obj_set_style_text_font(back_label, icon_font, 0);
-    lv_obj_set_style_text_color(back_label, lv_color_hex(0x173B35), 0);
-    lv_obj_center(back_label);
-
-    lv_obj_t* title_label = lv_label_create(header);
-    lv_label_set_text(title_label, title);
-    lv_obj_set_width(title_label, LV_HOR_RES - 96);
-    lv_label_set_long_mode(title_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_font(title_label, text_font, 0);
-    lv_obj_set_style_text_color(title_label, lv_color_hex(0x15231F), 0);
-    lv_obj_set_style_margin_left(title_label, 12, 0);
+    CreateAppHeader(app_detail_layer_, title, nullptr, lv_color_hex(0xE4ECE8),
+                    lv_color_hex(0x15231F), lv_color_hex(0x60736B));
 
     lv_obj_t* hero = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(hero, LV_HOR_RES - 24, 150);
-    lv_obj_set_style_radius(hero, 8, 0);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hero, 116, 0);
+    lv_obj_set_style_radius(hero, kCardRadius, 0);
     lv_obj_set_style_bg_color(hero, lv_color_hex(0x1D6B5F), 0);
     lv_obj_set_style_border_width(hero, 0, 0);
-    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_pad_all(hero, 14, 0);
+    lv_obj_set_style_shadow_width(hero, 0, 0);
     lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_t* hero_text = lv_label_create(hero);
     lv_label_set_text(hero_text, body);
-    lv_obj_set_width(hero_text, LV_HOR_RES - 56);
+    lv_obj_set_width(hero_text, LV_HOR_RES - kPagePad * 2 - 32);
     lv_label_set_long_mode(hero_text, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(hero_text, lv_color_white(), 0);
-    lv_obj_center(hero_text);
 
     const char* rows[] = {row1, row2, row3};
     for (const char* row_text : rows) {
         lv_obj_t* row = lv_obj_create(app_detail_layer_);
-        lv_obj_set_size(row, LV_HOR_RES - 24, 74);
-        lv_obj_set_style_radius(row, 8, 0);
-        lv_obj_set_style_bg_color(row, lv_color_white(), 0);
+        lv_obj_set_size(row, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(row, 58, 0);
+        lv_obj_set_style_radius(row, kCardRadius, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(row, 1, 0);
-        lv_obj_set_style_border_color(row, lv_color_hex(0xD9E4DF), 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(kBorderSoft), 0);
         lv_obj_set_style_pad_all(row, 12, 0);
+        lv_obj_set_style_shadow_width(row, 0, 0);
         lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_t* row_label = lv_label_create(row);
         lv_label_set_text(row_label, row_text);
-        lv_obj_set_width(row_label, LV_HOR_RES - 56);
+        lv_obj_set_width(row_label, LV_HOR_RES - kPagePad * 2 - 32);
         lv_label_set_long_mode(row_label, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(row_label, lv_color_hex(0x15231F), 0);
-        lv_obj_center(row_label);
     }
 
     lv_obj_t* cta = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(cta, LV_HOR_RES - 24, 52);
-    lv_obj_set_style_radius(cta, 8, 0);
+    lv_obj_set_size(cta, LV_HOR_RES - kPagePad * 2, 52);
+    lv_obj_set_style_radius(cta, kCardRadius, 0);
     lv_obj_set_style_bg_color(cta, lv_color_hex(0xE5F1ED), 0);
     lv_obj_set_style_border_width(cta, 0, 0);
+    lv_obj_set_style_shadow_width(cta, 0, 0);
     lv_obj_add_flag(cta, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(cta, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
     lv_obj_t* cta_label = lv_label_create(cta);
-    lv_label_set_text(cta_label, "返回应用中心");
+    lv_label_set_text(cta_label, "返回");
     lv_obj_set_style_text_color(cta_label, lv_color_hex(0x1D6B5F), 0);
     lv_obj_center(cta_label);
 
@@ -889,14 +1209,13 @@ void LcdDisplay::CreateTouchAppLauncher(lv_obj_t* screen) {
     auto icon_font = lvgl_theme->icon_font()->font();
 
     app_menu_button_ = lv_obj_create(screen);
-    lv_obj_set_size(app_menu_button_, 128, 50);
+    lv_obj_set_size(app_menu_button_, 136, 52);
     lv_obj_set_style_radius(app_menu_button_, 8, 0);
     lv_obj_set_style_bg_color(app_menu_button_, lv_color_hex(0x1D6B5F), 0);
     lv_obj_set_style_bg_opa(app_menu_button_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_menu_button_, 0, 0);
     lv_obj_set_style_pad_all(app_menu_button_, 0, 0);
-    lv_obj_set_style_shadow_width(app_menu_button_, 10, 0);
-    lv_obj_set_style_shadow_opa(app_menu_button_, LV_OPA_30, 0);
+    lv_obj_set_style_shadow_width(app_menu_button_, 0, 0);
     lv_obj_set_scrollbar_mode(app_menu_button_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_flag(app_menu_button_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(app_menu_button_, OnAppLauncherClicked, LV_EVENT_CLICKED, this);
@@ -947,47 +1266,172 @@ void LcdDisplay::ShowAppGrid() {
         app_detail_layer_ = nullptr;
     }
     if (app_grid_layer_ != nullptr) {
-        lv_obj_del(app_grid_layer_);
-        app_grid_layer_ = nullptr;
+        lv_obj_clear_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(app_grid_layer_);
+        return;
     }
 
     app_grid_layer_ = lv_obj_create(screen);
     lv_obj_set_size(app_grid_layer_, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_radius(app_grid_layer_, 0, 0);
-    lv_obj_set_style_bg_color(app_grid_layer_, lv_color_hex(0xF7FAF8), 0);
+    lv_obj_set_style_bg_color(app_grid_layer_, lv_color_hex(kSurfaceBg), 0);
     lv_obj_set_style_bg_opa(app_grid_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_grid_layer_, 0, 0);
-    lv_obj_set_style_pad_all(app_grid_layer_, 12, 0);
+    lv_obj_set_style_pad_all(app_grid_layer_, 0, 0);
+    lv_obj_set_style_pad_row(app_grid_layer_, 12, 0);
     lv_obj_set_scrollbar_mode(app_grid_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(app_grid_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_grid_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* header = lv_obj_create(app_grid_layer_);
-    lv_obj_set_size(header, LV_HOR_RES - 24, 52);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(header, LV_HOR_RES, 82);
+    lv_obj_set_style_radius(header, 0, 0);
+    lv_obj_set_style_bg_color(header, lv_color_hex(kSurfaceBg), 0);
+    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
+    lv_obj_set_style_pad_left(header, kPagePad, 0);
+    lv_obj_set_style_pad_right(header, kPagePad, 0);
+    lv_obj_set_style_pad_top(header, 8, 0);
+    lv_obj_set_style_pad_bottom(header, 0, 0);
+    lv_obj_set_style_shadow_width(header, 0, 0);
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    lv_obj_t* title = lv_label_create(header);
-    lv_label_set_text(title, "小亮应用中心");
+    lv_obj_t* back = lv_obj_create(header);
+    lv_obj_set_size(back, 50, 50);
+    lv_obj_set_style_radius(back, kCardRadius, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(kSurfaceCard), 0);
+    lv_obj_set_style_border_width(back, 1, 0);
+    lv_obj_set_style_border_color(back, lv_color_hex(kBorderSoft), 0);
+    lv_obj_set_style_pad_all(back, 0, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(back, OnAppGridCloseClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t* back_label = lv_label_create(back);
+    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
+    lv_obj_set_style_text_font(back_label, icon_font, 0);
+    lv_obj_set_style_text_color(back_label, lv_color_hex(0x111E1A), 0);
+    lv_obj_center(back_label);
+
+    lv_obj_t* title_box = lv_obj_create(header);
+    lv_obj_set_size(title_box, LV_HOR_RES - 128, 62);
+    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(title_box, 0, 0);
+    lv_obj_set_style_pad_left(title_box, 12, 0);
+    lv_obj_set_style_pad_top(title_box, 4, 0);
+    lv_obj_set_style_pad_bottom(title_box, 0, 0);
+    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(title_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_t* title = lv_label_create(title_box);
+    lv_label_set_text(title, "功能中心");
     lv_obj_set_style_text_font(title, text_font, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x173B35), 0);
+    lv_obj_set_style_transform_scale(title, 220, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(kTextPrimary), 0);
 
-    lv_obj_t* close = lv_obj_create(header);
-    lv_obj_set_size(close, 48, 42);
-    lv_obj_set_style_radius(close, 8, 0);
-    lv_obj_set_style_bg_color(close, lv_color_hex(0xE4ECE8), 0);
-    lv_obj_set_style_border_width(close, 0, 0);
-    lv_obj_add_flag(close, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(close, OnAppGridCloseClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* close_label = lv_label_create(close);
-    lv_label_set_text(close_label, FONT_AWESOME_XMARK);
-    lv_obj_set_style_text_font(close_label, icon_font, 0);
-    lv_obj_set_style_text_color(close_label, lv_color_hex(0x173B35), 0);
-    lv_obj_center(close_label);
+    lv_obj_t* subtitle = lv_label_create(title_box);
+    lv_label_set_text(subtitle, "选择一个场景或工具");
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(kTextSecondary), 0);
+    lv_obj_set_style_margin_top(subtitle, 4, 0);
 
-    lv_obj_t* grid = lv_obj_create(app_grid_layer_);
-    lv_obj_set_size(grid, LV_HOR_RES - 24, LV_VER_RES - 84);
+    lv_obj_t* right_space = lv_obj_create(header);
+    lv_obj_set_size(right_space, 50, 50);
+    lv_obj_set_style_bg_opa(right_space, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(right_space, 0, 0);
+    lv_obj_clear_flag(right_space, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* content = lv_obj_create(app_grid_layer_);
+    lv_obj_set_size(content, LV_HOR_RES - kPagePad * 2, LV_VER_RES - 104);
+    lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 0, 0);
+    lv_obj_set_style_pad_row(content, 12, 0);
+    lv_obj_set_scroll_dir(content, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* featured = lv_obj_create(content);
+    lv_obj_set_size(featured, LV_HOR_RES - kPagePad * 2, 144);
+    lv_obj_set_style_bg_color(featured, lv_color_hex(0x14231F), 0);
+    lv_obj_set_style_bg_opa(featured, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(featured, kCardRadius, 0);
+    lv_obj_set_style_border_width(featured, 0, 0);
+    lv_obj_set_style_pad_all(featured, 14, 0);
+    lv_obj_set_style_shadow_width(featured, 0, 0);
+    lv_obj_set_scrollbar_mode(featured, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(featured, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(featured, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t* featured_title = lv_label_create(featured);
+    lv_label_set_text(featured_title, "今日推荐");
+    lv_obj_set_style_text_font(featured_title, text_font, 0);
+    lv_obj_set_style_transform_scale(featured_title, 180, 0);
+    lv_obj_set_style_text_color(featured_title, lv_color_white(), 0);
+
+    lv_obj_t* featured_row = lv_obj_create(featured);
+    lv_obj_set_size(featured_row, LV_HOR_RES - kPagePad * 2 - 28, 88);
+    lv_obj_set_style_bg_opa(featured_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(featured_row, 0, 0);
+    lv_obj_set_style_pad_all(featured_row, 0, 0);
+    lv_obj_set_style_pad_column(featured_row, 10, 0);
+    lv_obj_set_style_margin_top(featured_row, 10, 0);
+    lv_obj_set_flex_flow(featured_row, LV_FLEX_FLOW_ROW);
+
+    XiaoliangAppModule::Kind featured_kinds[] = {
+        XiaoliangAppModule::Kind::kAiSpeaking,
+        XiaoliangAppModule::Kind::kMusic,
+    };
+    const lv_coord_t featured_width = (LV_HOR_RES - kPagePad * 2 - 28 - 10) / 2;
+    for (auto kind : featured_kinds) {
+        const auto* module = FindModule(kind);
+        if (module == nullptr) {
+            continue;
+        }
+        const uint32_t accent = ModuleAccentColor(module->kind);
+        lv_obj_t* quick = lv_obj_create(featured_row);
+        lv_obj_set_size(quick, featured_width, 84);
+        lv_obj_set_style_radius(quick, kCardRadius, 0);
+        lv_obj_set_style_bg_color(quick, lv_color_hex(0xF8FBFA), 0);
+        lv_obj_set_style_border_width(quick, 0, 0);
+        lv_obj_set_style_pad_all(quick, 10, 0);
+        lv_obj_set_style_shadow_width(quick, 0, 0);
+        lv_obj_set_scrollbar_mode(quick, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_flex_flow(quick, LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_flag(quick, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(quick, const_cast<XiaoliangAppModule*>(module));
+        lv_obj_add_event_cb(quick, OnAppModuleClicked, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* quick_icon = lv_label_create(quick);
+        lv_label_set_text(quick_icon, module->icon);
+        lv_obj_set_style_text_font(quick_icon, icon_font, 0);
+        lv_obj_set_style_text_color(quick_icon, lv_color_hex(accent), 0);
+
+        lv_obj_t* quick_title = lv_label_create(quick);
+        lv_label_set_text(quick_title, module->title);
+        lv_obj_set_style_text_font(quick_title, text_font, 0);
+        lv_obj_set_style_transform_scale(quick_title, 170, 0);
+        lv_obj_set_style_text_color(quick_title, lv_color_hex(kTextPrimary), 0);
+        lv_obj_set_style_margin_top(quick_title, 5, 0);
+    }
+
+    lv_obj_t* section_bar = lv_obj_create(content);
+    lv_obj_set_size(section_bar, LV_HOR_RES - kPagePad * 2, 34);
+    lv_obj_set_style_bg_opa(section_bar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(section_bar, 0, 0);
+    lv_obj_set_style_pad_all(section_bar, 0, 0);
+    lv_obj_set_flex_flow(section_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(section_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* section_title = lv_label_create(section_bar);
+    lv_label_set_text(section_title, "全部功能");
+    lv_obj_set_style_text_font(section_title, text_font, 0);
+    lv_obj_set_style_transform_scale(section_title, 170, 0);
+    lv_obj_set_style_text_color(section_title, lv_color_hex(kTextPrimary), 0);
+    lv_obj_t* section_hint = lv_label_create(section_bar);
+    lv_label_set_text(section_hint, "向下滑动");
+    lv_obj_set_style_text_color(section_hint, lv_color_hex(kTextSecondary), 0);
+
+    lv_obj_t* grid = lv_obj_create(content);
+    lv_obj_set_size(grid, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(grid, 0, 0);
     lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_style_pad_all(grid, 0, 0);
@@ -996,41 +1440,59 @@ void LcdDisplay::ShowAppGrid() {
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    const lv_coord_t tile_width = (LV_HOR_RES - 24 - 20) / 3;
-    const lv_coord_t tile_height = 132;
+    const lv_coord_t tile_width = (LV_HOR_RES - kPagePad * 2 - 10) / 2;
+    const lv_coord_t tile_height = 106;
     for (const auto& module : kXiaoliangModules) {
+        if (module.kind == XiaoliangAppModule::Kind::kAiSpeaking ||
+            module.kind == XiaoliangAppModule::Kind::kMusic) {
+            continue;
+        }
+        const uint32_t accent = ModuleAccentColor(module.kind);
+        const uint32_t tint = ModuleTintColor(module.kind);
         lv_obj_t* tile = lv_obj_create(grid);
         lv_obj_set_size(tile, tile_width, tile_height);
-        lv_obj_set_style_radius(tile, 8, 0);
-        lv_obj_set_style_bg_color(tile, lv_color_white(), 0);
+        lv_obj_set_style_radius(tile, kCardRadius, 0);
+        lv_obj_set_style_bg_color(tile, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(tile, 1, 0);
-        lv_obj_set_style_border_color(tile, lv_color_hex(0xD9E4DF), 0);
-        lv_obj_set_style_pad_all(tile, 8, 0);
+        lv_obj_set_style_border_color(tile, lv_color_hex(kBorderSoft), 0);
+        lv_obj_set_style_pad_all(tile, 10, 0);
+        lv_obj_set_style_shadow_width(tile, 0, 0);
         lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_user_data(tile, const_cast<XiaoliangAppModule*>(&module));
         lv_obj_add_event_cb(tile, OnAppModuleClicked, LV_EVENT_CLICKED, this);
 
-        lv_obj_t* icon = lv_label_create(tile);
+        lv_obj_t* icon_box = lv_obj_create(tile);
+        lv_obj_set_size(icon_box, 40, 40);
+        lv_obj_set_style_radius(icon_box, kCardRadius, 0);
+        lv_obj_set_style_bg_color(icon_box, lv_color_hex(tint), 0);
+        lv_obj_set_style_border_width(icon_box, 0, 0);
+        lv_obj_set_style_pad_all(icon_box, 0, 0);
+        lv_obj_set_scrollbar_mode(icon_box, LV_SCROLLBAR_MODE_OFF);
+
+        lv_obj_t* icon = lv_label_create(icon_box);
         lv_label_set_text(icon, module.icon);
         lv_obj_set_style_text_font(icon, icon_font, 0);
-        lv_obj_set_style_text_color(icon, lv_color_hex(0x1D6B5F), 0);
+        lv_obj_set_style_transform_scale(icon, 190, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(accent), 0);
+        lv_obj_center(icon);
 
         lv_obj_t* module_title = lv_label_create(tile);
         lv_label_set_text(module_title, module.title);
+        lv_label_set_long_mode(module_title, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_font(module_title, text_font, 0);
-        lv_obj_set_style_text_color(module_title, lv_color_hex(0x15231F), 0);
+        lv_obj_set_style_transform_scale(module_title, 190, 0);
+        lv_obj_set_style_text_color(module_title, lv_color_hex(kTextPrimary), 0);
         lv_obj_set_style_margin_top(module_title, 6, 0);
 
-        lv_obj_t* subtitle = lv_label_create(tile);
-        lv_label_set_text(subtitle, module.subtitle);
-        lv_obj_set_width(subtitle, tile_width - 16);
-        lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_align(subtitle, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(subtitle, lv_color_hex(0x60736B), 0);
-        lv_obj_set_style_margin_top(subtitle, 3, 0);
+        lv_obj_t* module_desc = lv_label_create(tile);
+        lv_label_set_text(module_desc, ModuleSummary(module.kind));
+        lv_obj_set_width(module_desc, tile_width - 20);
+        lv_label_set_long_mode(module_desc, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_color(module_desc, lv_color_hex(kTextSecondary), 0);
+        lv_obj_set_style_margin_top(module_desc, 4, 0);
     }
 
     lv_obj_move_foreground(app_grid_layer_);
@@ -1069,51 +1531,18 @@ void LcdDisplay::ShowAppDetail(const char* title, const char* subtitle, const ch
     lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF7FAF8), 0);
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
-    lv_obj_set_style_pad_all(app_detail_layer_, 12, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
 
-    lv_obj_t* header = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(header, LV_HOR_RES - 24, 56);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* back = lv_obj_create(header);
-    lv_obj_set_size(back, 50, 44);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0xE4ECE8), 0);
-    lv_obj_set_style_border_width(back, 0, 0);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(back, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* back_label = lv_label_create(back);
-    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
-    lv_obj_set_style_text_font(back_label, icon_font, 0);
-    lv_obj_set_style_text_color(back_label, lv_color_hex(0x173B35), 0);
-    lv_obj_center(back_label);
-
-    lv_obj_t* title_box = lv_obj_create(header);
-    lv_obj_set_size(title_box, LV_HOR_RES - 90, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(title_box, 0, 0);
-    lv_obj_set_style_pad_all(title_box, 0, 0);
-    lv_obj_set_style_margin_left(title_box, 10, 0);
-    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
-
-    lv_obj_t* title_label = lv_label_create(title_box);
-    lv_label_set_text(title_label, title);
-    lv_obj_set_style_text_font(title_label, text_font, 0);
-    lv_obj_set_style_text_color(title_label, lv_color_hex(0x15231F), 0);
-
-    lv_obj_t* subtitle_label = lv_label_create(title_box);
-    lv_label_set_text(subtitle_label, subtitle);
-    lv_obj_set_width(subtitle_label, LV_HOR_RES - 90);
-    lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(subtitle_label, lv_color_hex(0x60736B), 0);
+    CreateAppHeader(app_detail_layer_, title, subtitle, lv_color_hex(0xE4ECE8),
+                    lv_color_hex(0x15231F), lv_color_hex(0x60736B));
 
     lv_obj_t* list = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(list, LV_HOR_RES - 24, LV_VER_RES - 90);
+    lv_obj_set_size(list, LV_HOR_RES - kPagePad * 2, LV_VER_RES - 98);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
@@ -1123,13 +1552,15 @@ void LcdDisplay::ShowAppDetail(const char* title, const char* subtitle, const ch
 
     for (size_t i = 0; i < action_count; ++i) {
         lv_obj_t* action = lv_obj_create(list);
-        lv_obj_set_size(action, LV_HOR_RES - 24, 72);
-        lv_obj_set_style_radius(action, 8, 0);
-        lv_obj_set_style_bg_color(action, lv_color_white(), 0);
+        lv_obj_set_size(action, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(action, 82, 0);
+        lv_obj_set_style_radius(action, kCardRadius, 0);
+        lv_obj_set_style_bg_color(action, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(action, 1, 0);
-        lv_obj_set_style_border_color(action, lv_color_hex(0xD9E4DF), 0);
+        lv_obj_set_style_border_color(action, lv_color_hex(kBorderSoft), 0);
         lv_obj_set_style_pad_left(action, 18, 0);
         lv_obj_set_style_pad_right(action, 14, 0);
+        lv_obj_set_style_shadow_width(action, 0, 0);
         lv_obj_set_scrollbar_mode(action, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_flex_flow(action, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(action, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1144,7 +1575,7 @@ void LcdDisplay::ShowAppDetail(const char* title, const char* subtitle, const ch
         lv_obj_t* action_label = lv_label_create(action);
         lv_label_set_text(action_label, actions[i]);
         lv_obj_set_width(action_label, LV_HOR_RES - 128);
-        lv_label_set_long_mode(action_label, LV_LABEL_LONG_CLIP);
+        lv_label_set_long_mode(action_label, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_font(action_label, text_font, 0);
         lv_obj_set_style_text_color(action_label, lv_color_hex(0x15231F), 0);
         lv_obj_set_style_margin_left(action_label, 14, 0);
@@ -1182,67 +1613,37 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
     app_detail_layer_ = lv_obj_create(screen);
     lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_radius(app_detail_layer_, 0, 0);
-    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF6F8F7), 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(kSurfaceBg), 0);
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
-    lv_obj_set_style_pad_all(app_detail_layer_, 12, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
 
-    lv_obj_t* header = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(header, LV_HOR_RES - 24, 56);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* back = lv_obj_create(header);
-    lv_obj_set_size(back, 50, 44);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0xE4ECE8), 0);
-    lv_obj_set_style_border_width(back, 0, 0);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(back, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* back_label = lv_label_create(back);
-    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
-    lv_obj_set_style_text_font(back_label, icon_font, 0);
-    lv_obj_set_style_text_color(back_label, lv_color_hex(0x173B35), 0);
-    lv_obj_center(back_label);
-
-    lv_obj_t* title_box = lv_obj_create(header);
-    lv_obj_set_size(title_box, LV_HOR_RES - 90, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(title_box, 0, 0);
-    lv_obj_set_style_pad_all(title_box, 0, 0);
-    lv_obj_set_style_margin_left(title_box, 10, 0);
-    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
-
-    lv_obj_t* title_label = lv_label_create(title_box);
-    lv_label_set_text(title_label, title);
-    lv_obj_set_style_text_font(title_label, text_font, 0);
-    lv_obj_set_style_text_color(title_label, lv_color_hex(0x15231F), 0);
-
-    lv_obj_t* subtitle_label = lv_label_create(title_box);
-    lv_label_set_text(subtitle_label, subtitle);
-    lv_obj_set_width(subtitle_label, LV_HOR_RES - 90);
-    lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(subtitle_label, lv_color_hex(0x60736B), 0);
+    CreateAppHeader(app_detail_layer_, title, subtitle, lv_color_hex(0xE4ECE8),
+                    lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
 
     lv_obj_t* body = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(body, LV_HOR_RES - 24, LV_VER_RES - 82);
+    lv_obj_set_size(body, LV_HOR_RES - kPagePad * 2, LV_VER_RES - 96);
+    lv_obj_set_flex_grow(body, 1);
     lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(body, 0, 0);
     lv_obj_set_style_pad_all(body, 0, 0);
-    lv_obj_set_style_pad_row(body, 10, 0);
+    lv_obj_set_style_pad_row(body, 12, 0);
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
 
     lv_obj_t* hero = lv_obj_create(body);
-    lv_obj_set_size(hero, LV_HOR_RES - 24, 118);
-    lv_obj_set_style_radius(hero, 8, 0);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hero, 128, 0);
+    lv_obj_set_style_radius(hero, kCardRadius, 0);
     lv_obj_set_style_bg_color(hero, lv_color_hex(hero_color), 0);
     lv_obj_set_style_border_width(hero, 0, 0);
-    lv_obj_set_style_pad_all(hero, 14, 0);
+    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_shadow_width(hero, 0, 0);
     lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -1250,17 +1651,18 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
     lv_obj_t* hero_title_label = lv_label_create(hero);
     lv_label_set_text(hero_title_label, hero_title);
     lv_obj_set_style_text_font(hero_title_label, text_font, 0);
+    lv_obj_set_style_transform_scale(hero_title_label, 205, 0);
     lv_obj_set_style_text_color(hero_title_label, lv_color_white(), 0);
 
     lv_obj_t* hero_body_label = lv_label_create(hero);
     lv_label_set_text(hero_body_label, hero_body);
-    lv_obj_set_width(hero_body_label, LV_HOR_RES - 56);
+    lv_obj_set_width(hero_body_label, LV_HOR_RES - kPagePad * 2 - 32);
     lv_label_set_long_mode(hero_body_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(hero_body_label, lv_color_hex(0xEEF7F4), 0);
-    lv_obj_set_style_margin_top(hero_body_label, 8, 0);
+    lv_obj_set_style_margin_top(hero_body_label, 6, 0);
 
     lv_obj_t* metric_row = lv_obj_create(body);
-    lv_obj_set_size(metric_row, LV_HOR_RES - 24, 50);
+    lv_obj_set_size(metric_row, LV_HOR_RES - kPagePad * 2, 54);
     lv_obj_set_style_bg_opa(metric_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(metric_row, 0, 0);
     lv_obj_set_style_pad_all(metric_row, 0, 0);
@@ -1268,35 +1670,36 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
     lv_obj_set_flex_flow(metric_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(metric_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    const lv_coord_t metric_width = (LV_HOR_RES - 24 - 16) / 3;
+    const lv_coord_t metric_width = (LV_HOR_RES - kPagePad * 2 - 16) / 3;
     for (size_t i = 0; i < metric_count && i < 3; ++i) {
         lv_obj_t* metric = lv_obj_create(metric_row);
-        lv_obj_set_size(metric, metric_width, 44);
-        lv_obj_set_style_radius(metric, 8, 0);
-        lv_obj_set_style_bg_color(metric, lv_color_white(), 0);
+        lv_obj_set_size(metric, metric_width, 48);
+        lv_obj_set_style_radius(metric, kCardRadius, 0);
+        lv_obj_set_style_bg_color(metric, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(metric, 1, 0);
-        lv_obj_set_style_border_color(metric, lv_color_hex(0xD9E4DF), 0);
+        lv_obj_set_style_border_color(metric, lv_color_hex(kBorderSoft), 0);
         lv_obj_set_style_pad_all(metric, 0, 0);
+        lv_obj_set_style_shadow_width(metric, 0, 0);
         lv_obj_t* label = lv_label_create(metric);
         lv_label_set_text(label, metrics[i]);
-        lv_obj_set_style_text_color(label, lv_color_hex(0x1D6B5F), 0);
+        lv_obj_set_style_text_font(label, text_font, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(hero_color), 0);
         lv_obj_center(label);
     }
 
-    lv_obj_t* action_title = lv_label_create(body);
-    lv_label_set_text(action_title, "功能");
-    lv_obj_set_style_text_font(action_title, text_font, 0);
-    lv_obj_set_style_text_color(action_title, lv_color_hex(0x15231F), 0);
-
     for (size_t i = 0; i < action_count; ++i) {
         lv_obj_t* card = lv_obj_create(body);
-        lv_obj_set_size(card, LV_HOR_RES - 24, 78);
-        lv_obj_set_style_radius(card, 8, 0);
-        lv_obj_set_style_bg_color(card, lv_color_white(), 0);
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(card, 86, 0);
+        lv_obj_set_style_radius(card, kCardRadius, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(card, 1, 0);
-        lv_obj_set_style_border_color(card, lv_color_hex(0xD9E4DF), 0);
-        lv_obj_set_style_pad_left(card, 12, 0);
-        lv_obj_set_style_pad_right(card, 12, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(kBorderSoft), 0);
+        lv_obj_set_style_pad_left(card, 14, 0);
+        lv_obj_set_style_pad_right(card, 14, 0);
+        lv_obj_set_style_pad_top(card, 10, 0);
+        lv_obj_set_style_pad_bottom(card, 10, 0);
+        lv_obj_set_style_shadow_width(card, 0, 0);
         lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1306,17 +1709,17 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
 
         lv_obj_t* icon_box = lv_obj_create(card);
         lv_obj_set_size(icon_box, 48, 48);
-        lv_obj_set_style_radius(icon_box, 8, 0);
+        lv_obj_set_style_radius(icon_box, kCardRadius, 0);
         lv_obj_set_style_bg_color(icon_box, lv_color_hex(0xE5F1ED), 0);
         lv_obj_set_style_border_width(icon_box, 0, 0);
         lv_obj_t* icon = lv_label_create(icon_box);
         lv_label_set_text(icon, icons != nullptr ? icons[i] : FONT_AWESOME_CIRCLE_CHECK);
         lv_obj_set_style_text_font(icon, icon_font, 0);
-        lv_obj_set_style_text_color(icon, lv_color_hex(0x1D6B5F), 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(hero_color), 0);
         lv_obj_center(icon);
 
         lv_obj_t* text_box = lv_obj_create(card);
-        lv_obj_set_size(text_box, LV_HOR_RES - 132, LV_SIZE_CONTENT);
+        lv_obj_set_size(text_box, LV_HOR_RES - kPagePad * 2 - 132, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(text_box, 0, 0);
         lv_obj_set_style_pad_all(text_box, 0, 0);
@@ -1326,13 +1729,14 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
         lv_obj_t* action_label = lv_label_create(text_box);
         lv_label_set_text(action_label, actions[i]);
         lv_obj_set_style_text_font(action_label, text_font, 0);
-        lv_obj_set_style_text_color(action_label, lv_color_hex(0x15231F), 0);
+        lv_obj_set_style_transform_scale(action_label, 170, 0);
+        lv_obj_set_style_text_color(action_label, lv_color_hex(kTextPrimary), 0);
 
         lv_obj_t* desc_label = lv_label_create(text_box);
         lv_label_set_text(desc_label, descriptions != nullptr ? descriptions[i] : "点击进入功能详情");
-        lv_obj_set_width(desc_label, LV_HOR_RES - 140);
+        lv_obj_set_width(desc_label, LV_HOR_RES - kPagePad * 2 - 140);
         lv_label_set_long_mode(desc_label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_color(desc_label, lv_color_hex(0x60736B), 0);
+        lv_obj_set_style_text_color(desc_label, lv_color_hex(kTextSecondary), 0);
         lv_obj_set_style_margin_top(desc_label, 3, 0);
 
         lv_obj_t* arrow = lv_label_create(card);
@@ -1342,18 +1746,21 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
     }
 
     lv_obj_t* note = lv_obj_create(body);
-    lv_obj_set_size(note, LV_HOR_RES - 24, 86);
-    lv_obj_set_style_radius(note, 8, 0);
+    lv_obj_set_size(note, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(note, 76, 0);
+    lv_obj_set_style_radius(note, kCardRadius, 0);
     lv_obj_set_style_bg_color(note, lv_color_hex(0xEEF4F1), 0);
     lv_obj_set_style_border_width(note, 0, 0);
     lv_obj_set_style_pad_all(note, 12, 0);
+    lv_obj_set_style_shadow_width(note, 0, 0);
     lv_obj_set_scrollbar_mode(note, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(note, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(note, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_t* note_label = lv_label_create(note);
     lv_label_set_text(note_label, resource_note);
-    lv_obj_set_width(note_label, LV_HOR_RES - 54);
+    lv_obj_set_width(note_label, LV_HOR_RES - kPagePad * 2 - 30);
     lv_label_set_long_mode(note_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(note_label, lv_color_hex(0x36564C), 0);
-    lv_obj_center(note_label);
 
     lv_obj_move_foreground(app_detail_layer_);
 }
@@ -1368,8 +1775,8 @@ void LcdDisplay::ShowEyeIsland() {
     } else {
         snprintf(hero_body, sizeof(hero_body), "今日暂无完整数据，先展示演示报告：护眼分 86，远眺 4 次，坐姿提醒 2 次。");
     }
-    ShowFeatureDashboard("护眼岛", "护眼科普、预约、报告", 0x1D6B5F,
-                         "今日护眼计划", hero_body,
+    ShowFeatureDashboard("护眼岛", "科普报告", 0x1D6B5F,
+                         "护眼计划", hero_body,
                          kEyeMetrics, sizeof(kEyeMetrics) / sizeof(kEyeMetrics[0]),
                          kEyeIslandActions, kEyeDescriptions, kEyeIcons,
                          sizeof(kEyeIslandActions) / sizeof(kEyeIslandActions[0]),
@@ -1377,43 +1784,410 @@ void LcdDisplay::ShowEyeIsland() {
 }
 
 void LcdDisplay::ShowMusicBox() {
-    int track_count = CountMusicTracksFromManifest();
+    int track_count = 0;
+    int parse_status = 0;
+    auto scenes = LoadMusicScenesFromManifest(&track_count, &parse_status);
     char hero_body[180];
     char track_metric[32];
-    if (track_count > 0) {
-        snprintf(hero_body, sizeof(hero_body), "已读取 /sdcard/yinyuehe/manifest.json，当前可展示 %d 首场景音乐。", track_count);
-        snprintf(track_metric, sizeof(track_metric), "曲目 %d首", track_count);
-    } else if (track_count == -1) {
+    char scene_metric[32];
+    if (parse_status == 0 && track_count > 0) {
+        snprintf(hero_body, sizeof(hero_body), "这里展示 22 个主题场景，每个主题对应一个音频，点击主题即可播放 SD 卡里的 MP3。");
+        snprintf(track_metric, sizeof(track_metric), "音频 %d个", track_count);
+        snprintf(scene_metric, sizeof(scene_metric), "主题 %d个", static_cast<int>(scenes.size()));
+    } else if (parse_status == -1) {
         snprintf(hero_body, sizeof(hero_body), "未找到 /sdcard/yinyuehe/manifest.json，请确认 yinyuehe 已放到 SD 卡根目录。");
         snprintf(track_metric, sizeof(track_metric), "清单 缺失");
-    } else if (track_count == -2) {
+        snprintf(scene_metric, sizeof(scene_metric), "主题 0个");
+    } else if (parse_status == -2) {
         snprintf(hero_body, sizeof(hero_body), "音乐清单 JSON 解析失败，请检查 manifest.json 格式。");
         snprintf(track_metric, sizeof(track_metric), "清单 异常");
+        snprintf(scene_metric, sizeof(scene_metric), "主题 0个");
     } else {
-        snprintf(hero_body, sizeof(hero_body), "音乐清单存在但没有曲目，先展示推荐、睡眠和自然场景入口。");
-        snprintf(track_metric, sizeof(track_metric), "曲目 0首");
+        snprintf(hero_body, sizeof(hero_body), "音乐清单存在但没有可用主题，请检查 tracks[].name 和 sdcard_path。");
+        snprintf(track_metric, sizeof(track_metric), "音频 0个");
+        snprintf(scene_metric, sizeof(scene_metric), "主题 0个");
     }
-    const char* metrics[] = {track_metric, kMusicMetrics[1], kMusicMetrics[2]};
-    ShowFeatureDashboard("音乐盒", "SD 卡场景音乐", 0x335C81,
-                         "场景音乐", hero_body,
-                         metrics, sizeof(metrics) / sizeof(metrics[0]),
-                         kMusicActions, kMusicDescriptions, kMusicIcons,
-                         sizeof(kMusicActions) / sizeof(kMusicActions[0]),
-                         "播放路径统一为 /sdcard/yinyuehe/audio/<storage_name>。播放控制页已预留 TTS 冲突处理入口。");
+
+    DisplayLockGuard lock(this);
+    LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = lvgl_theme->text_font()->font();
+    auto icon_font = lvgl_theme->icon_font()->font();
+    lv_obj_t* screen = lv_screen_active();
+
+    if (app_detail_layer_ != nullptr) {
+        lv_obj_del(app_detail_layer_);
+        app_detail_layer_ = nullptr;
+    }
+    if (app_grid_layer_ != nullptr) {
+        lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    app_detail_layer_ = lv_obj_create(screen);
+    lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_radius(app_detail_layer_, 0, 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(kSurfaceBg), 0);
+    lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
+
+    CreateAppHeader(app_detail_layer_, "音乐盒", "场景音乐", lv_color_hex(0xE4ECE8),
+                    lv_color_hex(0x15231F), lv_color_hex(0x60736B));
+
+    lv_obj_t* body = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(body, LV_HOR_RES - kPagePad * 2, LV_VER_RES - 96);
+    lv_obj_set_flex_grow(body, 1);
+    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(body, 0, 0);
+    lv_obj_set_style_pad_all(body, 0, 0);
+    lv_obj_set_style_pad_row(body, 12, 0);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+
+    lv_obj_t* hero = lv_obj_create(body);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hero, 128, 0);
+    lv_obj_set_style_radius(hero, kCardRadius, 0);
+    lv_obj_set_style_bg_color(hero, lv_color_hex(0x335C81), 0);
+    lv_obj_set_style_border_width(hero, 0, 0);
+    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_shadow_width(hero, 0, 0);
+    lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t* hero_title_label = lv_label_create(hero);
+    lv_label_set_text(hero_title_label, "主题音乐");
+    lv_obj_set_style_text_font(hero_title_label, text_font, 0);
+    lv_obj_set_style_transform_scale(hero_title_label, 205, 0);
+    lv_obj_set_style_text_color(hero_title_label, lv_color_white(), 0);
+
+    lv_obj_t* hero_body_label = lv_label_create(hero);
+    lv_label_set_text(hero_body_label, hero_body);
+    lv_obj_set_width(hero_body_label, LV_HOR_RES - kPagePad * 2 - 32);
+    lv_label_set_long_mode(hero_body_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(hero_body_label, lv_color_hex(0xEEF7F4), 0);
+    lv_obj_set_style_margin_top(hero_body_label, 6, 0);
+
+    lv_obj_t* metric_row = lv_obj_create(body);
+    lv_obj_set_size(metric_row, LV_HOR_RES - kPagePad * 2, 54);
+    lv_obj_set_style_bg_opa(metric_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(metric_row, 0, 0);
+    lv_obj_set_style_pad_all(metric_row, 0, 0);
+    lv_obj_set_style_pad_column(metric_row, 8, 0);
+    lv_obj_set_flex_flow(metric_row, LV_FLEX_FLOW_ROW);
+    const char* metrics[] = {track_metric, scene_metric, "本地 MP3"};
+    const lv_coord_t metric_width = (LV_HOR_RES - kPagePad * 2 - 16) / 3;
+    for (size_t i = 0; i < 3; ++i) {
+        lv_obj_t* metric = lv_obj_create(metric_row);
+        lv_obj_set_size(metric, metric_width, 48);
+        lv_obj_set_style_radius(metric, kCardRadius, 0);
+        lv_obj_set_style_bg_color(metric, lv_color_hex(kSurfaceCard), 0);
+        lv_obj_set_style_border_width(metric, 1, 0);
+        lv_obj_set_style_border_color(metric, lv_color_hex(kBorderSoft), 0);
+        lv_obj_set_style_pad_all(metric, 0, 0);
+        lv_obj_set_style_shadow_width(metric, 0, 0);
+        lv_obj_t* label = lv_label_create(metric);
+        lv_label_set_text(label, metrics[i]);
+        lv_obj_set_style_text_font(label, text_font, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x335C81), 0);
+        lv_obj_center(label);
+    }
+
+    lv_obj_t* player = lv_obj_create(body);
+    lv_obj_set_size(player, LV_HOR_RES - kPagePad * 2, 62);
+    lv_obj_set_style_radius(player, kCardRadius, 0);
+    lv_obj_set_style_bg_color(player, lv_color_hex(0xE7EEF6), 0);
+    lv_obj_set_style_border_width(player, 0, 0);
+    lv_obj_set_style_pad_left(player, 14, 0);
+    lv_obj_set_style_pad_right(player, 14, 0);
+    lv_obj_set_style_shadow_width(player, 0, 0);
+    lv_obj_set_scrollbar_mode(player, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(player, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(player, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* player_icon = lv_label_create(player);
+    lv_label_set_text(player_icon, FONT_AWESOME_HEADPHONES);
+    lv_obj_set_style_text_font(player_icon, icon_font, 0);
+    lv_obj_set_style_text_color(player_icon, lv_color_hex(0x335C81), 0);
+
+    lv_obj_t* player_text = lv_label_create(player);
+    lv_label_set_text(player_text, "点选任意主题立即播放，切换主题会中断当前音频");
+    lv_obj_set_width(player_text, LV_HOR_RES - kPagePad * 2 - 64);
+    lv_label_set_long_mode(player_text, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(player_text, lv_color_hex(0x27465F), 0);
+    lv_obj_set_style_margin_left(player_text, 12, 0);
+
+    lv_obj_t* section = lv_label_create(body);
+    lv_label_set_text(section, "选择音频");
+    lv_obj_set_style_text_font(section, text_font, 0);
+    lv_obj_set_style_text_color(section, lv_color_hex(kTextPrimary), 0);
+
+    for (const auto& scene : scenes) {
+        lv_obj_t* card = lv_obj_create(body);
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(card, 88, 0);
+        lv_obj_set_style_radius(card, kCardRadius, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(kSurfaceCard), 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(kBorderSoft), 0);
+        lv_obj_set_style_pad_left(card, 14, 0);
+        lv_obj_set_style_pad_right(card, 14, 0);
+        lv_obj_set_style_pad_top(card, 10, 0);
+        lv_obj_set_style_pad_bottom(card, 10, 0);
+        lv_obj_set_style_shadow_width(card, 0, 0);
+        lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(card, new MusicSceneItem(scene));
+        lv_obj_add_event_cb(card, OnMusicSceneClicked, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(card, OnMusicSceneClicked, LV_EVENT_DELETE, this);
+
+        lv_obj_t* icon_box = lv_obj_create(card);
+        lv_obj_set_size(icon_box, 50, 50);
+        lv_obj_set_style_radius(icon_box, kCardRadius, 0);
+        lv_obj_set_style_bg_color(icon_box, lv_color_hex(0xE7EEF6), 0);
+        lv_obj_set_style_border_width(icon_box, 0, 0);
+        lv_obj_t* icon = lv_label_create(icon_box);
+        lv_label_set_text(icon, MusicSceneIcon(scene.scene));
+        lv_obj_set_style_text_font(icon, icon_font, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(0x335C81), 0);
+        lv_obj_center(icon);
+
+        lv_obj_t* text_box = lv_obj_create(card);
+        lv_obj_set_size(text_box, LV_HOR_RES - kPagePad * 2 - 140, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(text_box, 0, 0);
+        lv_obj_set_style_pad_all(text_box, 0, 0);
+        lv_obj_set_style_margin_left(text_box, 12, 0);
+        lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t* title_label = lv_label_create(text_box);
+        lv_label_set_text(title_label, scene.scene.c_str());
+        lv_obj_set_style_text_font(title_label, text_font, 0);
+        lv_obj_set_style_transform_scale(title_label, 170, 0);
+        lv_obj_set_style_text_color(title_label, lv_color_hex(kTextPrimary), 0);
+
+        char desc[128];
+        if (scene.duration_seconds > 0) {
+            snprintf(desc, sizeof(desc), "%s | %d秒", scene.track_name.c_str(), scene.duration_seconds);
+        } else {
+            snprintf(desc, sizeof(desc), "%s", scene.track_name.c_str());
+        }
+        lv_obj_t* desc_label = lv_label_create(text_box);
+        lv_label_set_text(desc_label, desc);
+        lv_obj_set_width(desc_label, LV_HOR_RES - kPagePad * 2 - 148);
+        lv_label_set_long_mode(desc_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(desc_label, lv_color_hex(kTextSecondary), 0);
+        lv_obj_set_style_margin_top(desc_label, 3, 0);
+
+        lv_obj_t* play = lv_label_create(card);
+        lv_label_set_text(play, FONT_AWESOME_PLAY);
+        lv_obj_set_style_text_font(play, icon_font, 0);
+        lv_obj_set_style_text_color(play, lv_color_hex(0x8CA099), 0);
+    }
+
+    if (scenes.empty()) {
+        lv_obj_t* note = lv_obj_create(body);
+        lv_obj_set_size(note, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(note, 76, 0);
+        lv_obj_set_style_radius(note, 8, 0);
+        lv_obj_set_style_bg_color(note, lv_color_hex(0xEEF4F1), 0);
+        lv_obj_set_style_border_width(note, 0, 0);
+        lv_obj_set_style_pad_all(note, 12, 0);
+        lv_obj_t* note_label = lv_label_create(note);
+        lv_label_set_text(note_label, "请把 yinyuehe 文件夹放到 SD 卡根目录，并确认 manifest.json 中包含 tracks、name 和 sdcard_path。");
+        lv_obj_set_width(note_label, LV_HOR_RES - 54);
+        lv_label_set_long_mode(note_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(note_label, lv_color_hex(0x36564C), 0);
+    }
+
+    lv_obj_move_foreground(app_detail_layer_);
 }
 
 void LcdDisplay::ShowAiSpeaking() {
-    ShowFeatureDashboard("AI听说", "场景化对话训练", 0x6A4C93,
-                         "今天练一个场景", "选择场景后进入听说训练，设备会切到聆听流程；无网络时展示离线提示。",
-                         kAiMetrics, sizeof(kAiMetrics) / sizeof(kAiMetrics[0]),
-                         kAiSpeakActions, kAiDescriptions, kAiIcons,
-                         sizeof(kAiSpeakActions) / sizeof(kAiSpeakActions[0]),
-                         "场景 prompt 已按独立数据结构规划，后续可由后台下发或按模块跳转。");
+    DisplayLockGuard lock(this);
+    LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = lvgl_theme->text_font()->font();
+    auto icon_font = lvgl_theme->icon_font()->font();
+    lv_obj_t* screen = lv_screen_active();
+
+    if (app_detail_layer_ != nullptr) {
+        lv_obj_del(app_detail_layer_);
+        app_detail_layer_ = nullptr;
+    }
+    if (app_grid_layer_ != nullptr) {
+        lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    app_detail_layer_ = lv_obj_create(screen);
+    lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_radius(app_detail_layer_, 0, 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(kSurfaceBg), 0);
+    lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
+
+    CreateAppHeader(app_detail_layer_, "AI听说", "对话场景", lv_color_hex(0xE4ECE8),
+                    lv_color_hex(0x15231F), lv_color_hex(0x60736B));
+
+    lv_obj_t* body = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(body, LV_HOR_RES - kPagePad * 2, LV_VER_RES - 96);
+    lv_obj_set_flex_grow(body, 1);
+    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(body, 0, 0);
+    lv_obj_set_style_pad_all(body, 0, 0);
+    lv_obj_set_style_pad_row(body, 12, 0);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(body, LV_DIR_VER);
+
+    lv_obj_t* hero = lv_obj_create(body);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hero, 128, 0);
+    lv_obj_set_style_radius(hero, kCardRadius, 0);
+    lv_obj_set_style_bg_color(hero, lv_color_hex(0x6A4C93), 0);
+    lv_obj_set_style_border_width(hero, 0, 0);
+    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_shadow_width(hero, 0, 0);
+    lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t* hero_title_label = lv_label_create(hero);
+    lv_label_set_text(hero_title_label, "开始一场对话");
+    lv_obj_set_style_text_font(hero_title_label, text_font, 0);
+    lv_obj_set_style_transform_scale(hero_title_label, 205, 0);
+    lv_obj_set_style_text_color(hero_title_label, lv_color_white(), 0);
+
+    lv_obj_t* hero_body_label = lv_label_create(hero);
+    lv_label_set_text(hero_body_label, "选择场景后，设备会先播开场白，再回到聆听中等待孩子回答。");
+    lv_obj_set_width(hero_body_label, LV_HOR_RES - kPagePad * 2 - 32);
+    lv_label_set_long_mode(hero_body_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(hero_body_label, lv_color_hex(0xF2EBFA), 0);
+    lv_obj_set_style_margin_top(hero_body_label, 6, 0);
+
+    lv_obj_t* metric_row = lv_obj_create(body);
+    lv_obj_set_size(metric_row, LV_HOR_RES - kPagePad * 2, 54);
+    lv_obj_set_style_bg_opa(metric_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(metric_row, 0, 0);
+    lv_obj_set_style_pad_all(metric_row, 0, 0);
+    lv_obj_set_style_pad_column(metric_row, 8, 0);
+    lv_obj_set_flex_flow(metric_row, LV_FLEX_FLOW_ROW);
+    char scene_metric[32];
+    snprintf(scene_metric, sizeof(scene_metric), "场景 %d个", static_cast<int>(sizeof(kAiScenarios) / sizeof(kAiScenarios[0])));
+    const char* metrics[] = {scene_metric, "开场 引导", "持续 追问"};
+    const lv_coord_t metric_width = (LV_HOR_RES - kPagePad * 2 - 16) / 3;
+    for (size_t i = 0; i < 3; ++i) {
+        lv_obj_t* metric = lv_obj_create(metric_row);
+        lv_obj_set_size(metric, metric_width, 48);
+        lv_obj_set_style_radius(metric, kCardRadius, 0);
+        lv_obj_set_style_bg_color(metric, lv_color_hex(kSurfaceCard), 0);
+        lv_obj_set_style_border_width(metric, 1, 0);
+        lv_obj_set_style_border_color(metric, lv_color_hex(kBorderSoft), 0);
+        lv_obj_set_style_pad_all(metric, 0, 0);
+        lv_obj_set_style_shadow_width(metric, 0, 0);
+        lv_obj_t* label = lv_label_create(metric);
+        lv_label_set_text(label, metrics[i]);
+        lv_obj_set_style_text_font(label, text_font, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x6A4C93), 0);
+        lv_obj_center(label);
+    }
+
+    const char* current_category = nullptr;
+
+    for (const auto& scenario : kAiScenarios) {
+        if (current_category == nullptr || strcmp(current_category, scenario.category) != 0) {
+            current_category = scenario.category;
+            lv_obj_t* section_bar = lv_obj_create(body);
+            lv_obj_set_size(section_bar, LV_HOR_RES - kPagePad * 2, 34);
+            lv_obj_set_style_bg_opa(section_bar, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(section_bar, 0, 0);
+            lv_obj_set_style_pad_all(section_bar, 0, 0);
+            lv_obj_set_flex_flow(section_bar, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(section_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+            lv_obj_t* section = lv_label_create(section_bar);
+            lv_label_set_text(section, current_category);
+            lv_obj_set_style_text_font(section, text_font, 0);
+            lv_obj_set_style_transform_scale(section, 165, 0);
+            lv_obj_set_style_text_color(section, lv_color_hex(kTextPrimary), 0);
+
+            lv_obj_t* hint = lv_label_create(section_bar);
+            lv_label_set_text(hint, "点击开始");
+            lv_obj_set_style_text_color(hint, lv_color_hex(kTextSecondary), 0);
+        }
+
+        lv_obj_t* card = lv_obj_create(body);
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(card, 88, 0);
+        lv_obj_set_style_radius(card, kCardRadius, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(kSurfaceCard), 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(kBorderSoft), 0);
+        lv_obj_set_style_pad_left(card, 14, 0);
+        lv_obj_set_style_pad_right(card, 14, 0);
+        lv_obj_set_style_pad_top(card, 10, 0);
+        lv_obj_set_style_pad_bottom(card, 10, 0);
+        lv_obj_set_style_shadow_width(card, 0, 0);
+        lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(card, const_cast<AiScenarioItem*>(&scenario));
+        lv_obj_add_event_cb(card, OnAiScenarioClicked, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* icon_box = lv_obj_create(card);
+        lv_obj_set_size(icon_box, 50, 50);
+        lv_obj_set_style_radius(icon_box, kCardRadius, 0);
+        lv_obj_set_style_bg_color(icon_box, lv_color_hex(0xEFE8F7), 0);
+        lv_obj_set_style_border_width(icon_box, 0, 0);
+        lv_obj_t* icon = lv_label_create(icon_box);
+        lv_label_set_text(icon, scenario.icon);
+        lv_obj_set_style_text_font(icon, icon_font, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(0x6A4C93), 0);
+        lv_obj_center(icon);
+
+        lv_obj_t* text_box = lv_obj_create(card);
+        lv_obj_set_size(text_box, LV_HOR_RES - kPagePad * 2 - 140, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(text_box, 0, 0);
+        lv_obj_set_style_pad_all(text_box, 0, 0);
+        lv_obj_set_style_margin_left(text_box, 12, 0);
+        lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t* title_label = lv_label_create(text_box);
+        lv_label_set_text(title_label, scenario.title);
+        lv_obj_set_style_text_font(title_label, text_font, 0);
+        lv_obj_set_style_transform_scale(title_label, 170, 0);
+        lv_obj_set_style_text_color(title_label, lv_color_hex(kTextPrimary), 0);
+
+        lv_obj_t* desc_label = lv_label_create(text_box);
+        lv_label_set_text(desc_label, scenario.description);
+        lv_obj_set_width(desc_label, LV_HOR_RES - kPagePad * 2 - 148);
+        lv_label_set_long_mode(desc_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(desc_label, lv_color_hex(kTextSecondary), 0);
+        lv_obj_set_style_margin_top(desc_label, 3, 0);
+
+        lv_obj_t* play = lv_label_create(card);
+        lv_label_set_text(play, FONT_AWESOME_PLAY);
+        lv_obj_set_style_text_font(play, icon_font, 0);
+        lv_obj_set_style_text_color(play, lv_color_hex(0x8CA099), 0);
+    }
+
+    lv_obj_move_foreground(app_detail_layer_);
 }
 
 void LcdDisplay::ShowHealthHub() {
-    ShowFeatureDashboard("健康提醒", "坐姿、饮水、休息、远眺", 0x8B5E34,
-                         "今日健康节奏", "聚合护眼和坐姿状态，饮水与休息提醒复用定时任务能力。",
+    ShowFeatureDashboard("健康", "饮水休息", 0x8B5E34,
+                         "健康节奏", "聚合护眼和坐姿状态，饮水与休息提醒复用定时任务能力。",
                          kHealthMetrics, sizeof(kHealthMetrics) / sizeof(kHealthMetrics[0]),
                          kHealthActions, kHealthDescriptions, kHealthIcons,
                          sizeof(kHealthActions) / sizeof(kHealthActions[0]),
@@ -1424,8 +2198,8 @@ void LcdDisplay::ShowExpressionAlbum() {
     char hero_body[180];
     auto style = CurrentPetStyleName();
     snprintf(hero_body, sizeof(hero_body), "当前皮肤：%s。表情预览只从 /sdcard/style/%s/<filename>.mjpeg 读取。", style.c_str(), style.c_str());
-    ShowFeatureDashboard("表情相册", "宠物动画和素材预览", 0x4F6F52,
-                         "当前皮肤表情", hero_body,
+    ShowFeatureDashboard("表情", "动画预览", 0x4F6F52,
+                         "皮肤表情", hero_body,
                          kAlbumMetrics, sizeof(kAlbumMetrics) / sizeof(kAlbumMetrics[0]),
                          kAlbumActions, kAlbumDescriptions, kAlbumIcons,
                          sizeof(kAlbumActions) / sizeof(kAlbumActions[0]),
@@ -1433,8 +2207,8 @@ void LcdDisplay::ShowExpressionAlbum() {
 }
 
 void LcdDisplay::ShowDeviceSettings() {
-    ShowFeatureDashboard("设备设置", "屏幕、音量、网络、资源诊断", 0x2F4858,
-                         "设备控制中心", "提供亮度、音量、网络和 SD 卡资源诊断入口，适合触摸屏现场调试和产测。",
+    ShowFeatureDashboard("设置", "设备资源", 0x2F4858,
+                         "设备控制", "提供亮度、音量、网络和 SD 卡资源诊断入口，适合触摸屏现场调试和产测。",
                          kDeviceMetrics, sizeof(kDeviceMetrics) / sizeof(kDeviceMetrics[0]),
                          kDeviceActions, kDeviceDescriptions, kDeviceIcons,
                          sizeof(kDeviceActions) / sizeof(kDeviceActions[0]),
@@ -1442,7 +2216,7 @@ void LcdDisplay::ShowDeviceSettings() {
 }
 
 void LcdDisplay::ShowMoreApps() {
-    ShowFeatureDashboard("更多", "后续模块入口", 0x5F5B6B,
+    ShowFeatureDashboard("更多", "模块入口", 0x5F5B6B,
                          "扩展中心", "成长档案、家长控制、固件升级等模块先以可点击入口展示，后续按注册表扩展。",
                          kMoreMetrics, sizeof(kMoreMetrics) / sizeof(kMoreMetrics[0]),
                          kMoreActions, kMoreDescriptions, kMoreIcons,
@@ -1468,49 +2242,18 @@ void LcdDisplay::ShowTaskScheduler() {
     app_detail_layer_ = lv_obj_create(screen);
     lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_radius(app_detail_layer_, 0, 0);
-    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF4F7F5), 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(kSurfaceBg), 0);
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
-    lv_obj_set_style_pad_all(app_detail_layer_, 12, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
 
-    lv_obj_t* header = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(header, LV_HOR_RES - 24, 54);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* back = lv_obj_create(header);
-    lv_obj_set_size(back, 50, 44);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0xE2EBE6), 0);
-    lv_obj_set_style_border_width(back, 0, 0);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(back, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* back_label = lv_label_create(back);
-    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
-    lv_obj_set_style_text_font(back_label, icon_font, 0);
-    lv_obj_set_style_text_color(back_label, lv_color_hex(0x183B34), 0);
-    lv_obj_center(back_label);
-
-    lv_obj_t* title_box = lv_obj_create(header);
-    lv_obj_set_size(title_box, LV_HOR_RES - 90, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(title_box, 0, 0);
-    lv_obj_set_style_pad_all(title_box, 0, 0);
-    lv_obj_set_style_margin_left(title_box, 10, 0);
-    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
-
-    lv_obj_t* title = lv_label_create(title_box);
-    lv_label_set_text(title, "定时任务");
-    lv_obj_set_style_text_font(title, text_font, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x15231F), 0);
-
-    lv_obj_t* subtitle = lv_label_create(title_box);
-    lv_label_set_text(subtitle, "提醒、习惯、学习节奏");
-    lv_obj_set_style_text_color(subtitle, lv_color_hex(0x60736B), 0);
+    CreateAppHeader(app_detail_layer_, "定时", "提醒", lv_color_hex(0xE2EBE6),
+                    lv_color_hex(0x183B34), lv_color_hex(0x60736B));
 
     cJSON* reminders = Application::GetInstance().GetRemindersJson();
     cJSON* tasks = reminders != nullptr ? cJSON_GetObjectItem(reminders, "tasks") : nullptr;
@@ -1543,17 +2286,19 @@ void LcdDisplay::ShowTaskScheduler() {
     }
 
     lv_obj_t* hero = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(hero, LV_HOR_RES - 24, 116);
-    lv_obj_set_style_radius(hero, 8, 0);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hero, 132, 0);
+    lv_obj_set_style_radius(hero, kCardRadius, 0);
     lv_obj_set_style_bg_color(hero, lv_color_hex(0x1D6B5F), 0);
     lv_obj_set_style_border_width(hero, 0, 0);
-    lv_obj_set_style_pad_all(hero, 14, 0);
+    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_shadow_width(hero, 0, 0);
     lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     lv_obj_t* hero_title = lv_label_create(hero);
-    lv_label_set_text(hero_title, "下一次提醒");
+    lv_label_set_text(hero_title, "下次");
     lv_obj_set_style_text_color(hero_title, lv_color_hex(0xBDE7DA), 0);
 
     char next_line[96];
@@ -1565,18 +2310,19 @@ void LcdDisplay::ShowTaskScheduler() {
         strftime(time_text, sizeof(time_text), "%H:%M", &tm_time);
         snprintf(next_line, sizeof(next_line), "%s  %s", time_text, next_content != nullptr ? next_content : "提醒");
     } else {
-        snprintf(next_line, sizeof(next_line), "暂无待执行任务");
+        snprintf(next_line, sizeof(next_line), "暂无任务");
     }
     lv_obj_t* next_label = lv_label_create(hero);
     lv_label_set_text(next_label, next_line);
-    lv_obj_set_width(next_label, LV_HOR_RES - 62);
-    lv_label_set_long_mode(next_label, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(next_label, LV_HOR_RES - kPagePad * 2 - 32);
+    lv_label_set_long_mode(next_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(next_label, text_font, 0);
+    lv_obj_set_style_transform_scale(next_label, 190, 0);
     lv_obj_set_style_text_color(next_label, lv_color_white(), 0);
     lv_obj_set_style_margin_top(next_label, 6, 0);
 
     lv_obj_t* metrics = lv_obj_create(hero);
-    lv_obj_set_size(metrics, LV_HOR_RES - 52, 30);
+    lv_obj_set_size(metrics, LV_HOR_RES - kPagePad * 2 - 32, 34);
     lv_obj_set_style_bg_opa(metrics, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(metrics, 0, 0);
     lv_obj_set_style_pad_all(metrics, 0, 0);
@@ -1588,14 +2334,15 @@ void LcdDisplay::ShowTaskScheduler() {
     char fired_text[24];
     snprintf(pending_text, sizeof(pending_text), "待执行 %d", pending_count);
     snprintf(fired_text, sizeof(fired_text), "已完成 %d", fired_count);
-    const char* metric_labels[] = {pending_text, fired_text, "语音可创建"};
+    const char* metric_labels[] = {pending_text, fired_text, "语音创建"};
     for (auto label_text : metric_labels) {
         lv_obj_t* chip = lv_obj_create(metrics);
-        lv_obj_set_size(chip, 120, 28);
-        lv_obj_set_style_radius(chip, 8, 0);
+        lv_obj_set_size(chip, 124, 30);
+        lv_obj_set_style_radius(chip, kCardRadius, 0);
         lv_obj_set_style_bg_color(chip, lv_color_hex(0x2B8072), 0);
         lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(chip, 0, 0);
+        lv_obj_set_style_shadow_width(chip, 0, 0);
         lv_obj_set_style_pad_all(chip, 0, 0);
         lv_obj_t* chip_label = lv_label_create(chip);
         lv_label_set_text(chip_label, label_text);
@@ -1610,7 +2357,7 @@ void LcdDisplay::ShowTaskScheduler() {
     lv_obj_set_style_margin_top(quick_title, 10, 0);
 
     lv_obj_t* quick_row = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(quick_row, LV_HOR_RES - 24, 66);
+    lv_obj_set_size(quick_row, LV_HOR_RES - kPagePad * 2, 74);
     lv_obj_set_style_bg_opa(quick_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(quick_row, 0, 0);
     lv_obj_set_style_pad_all(quick_row, 0, 0);
@@ -1620,12 +2367,13 @@ void LcdDisplay::ShowTaskScheduler() {
 
     for (const auto& preset : kQuickTimerPresets) {
         lv_obj_t* quick = lv_obj_create(quick_row);
-        lv_obj_set_size(quick, 105, 58);
-        lv_obj_set_style_radius(quick, 8, 0);
-        lv_obj_set_style_bg_color(quick, lv_color_white(), 0);
+        lv_obj_set_size(quick, 106, 66);
+        lv_obj_set_style_radius(quick, kCardRadius, 0);
+        lv_obj_set_style_bg_color(quick, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(quick, 1, 0);
         lv_obj_set_style_border_color(quick, lv_color_hex(0xCFE0D8), 0);
         lv_obj_set_style_pad_all(quick, 4, 0);
+        lv_obj_set_style_shadow_width(quick, 0, 0);
         lv_obj_set_scrollbar_mode(quick, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_flex_flow(quick, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(quick, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1644,7 +2392,7 @@ void LcdDisplay::ShowTaskScheduler() {
     }
 
     lv_obj_t* list_header = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(list_header, LV_HOR_RES - 24, 42);
+    lv_obj_set_size(list_header, LV_HOR_RES - kPagePad * 2, 46);
     lv_obj_set_style_bg_opa(list_header, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list_header, 0, 0);
     lv_obj_set_style_pad_all(list_header, 0, 0);
@@ -1658,7 +2406,7 @@ void LcdDisplay::ShowTaskScheduler() {
 
     lv_obj_t* add_button = lv_obj_create(list_header);
     lv_obj_set_size(add_button, 126, 38);
-    lv_obj_set_style_radius(add_button, 8, 0);
+    lv_obj_set_style_radius(add_button, kCardRadius, 0);
     lv_obj_set_style_bg_color(add_button, lv_color_hex(0xE2EBE6), 0);
     lv_obj_set_style_border_width(add_button, 0, 0);
     lv_obj_add_flag(add_button, LV_OBJ_FLAG_CLICKABLE);
@@ -1669,7 +2417,8 @@ void LcdDisplay::ShowTaskScheduler() {
     lv_obj_center(add_label);
 
     lv_obj_t* list = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(list, LV_HOR_RES - 24, 290);
+    lv_obj_set_size(list, LV_HOR_RES - kPagePad * 2, 300);
+    lv_obj_set_flex_grow(list, 1);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
@@ -1700,19 +2449,21 @@ void LcdDisplay::ShowTaskScheduler() {
             strftime(time_text, sizeof(time_text), "%m/%d %H:%M", &tm_time);
 
             lv_obj_t* row = lv_obj_create(list);
-            lv_obj_set_size(row, LV_HOR_RES - 24, 72);
-            lv_obj_set_style_radius(row, 8, 0);
-            lv_obj_set_style_bg_color(row, lv_color_white(), 0);
+            lv_obj_set_size(row, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+            lv_obj_set_style_min_height(row, 82, 0);
+            lv_obj_set_style_radius(row, kCardRadius, 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(kSurfaceCard), 0);
             lv_obj_set_style_border_width(row, 1, 0);
-            lv_obj_set_style_border_color(row, lv_color_hex(0xD9E4DF), 0);
+            lv_obj_set_style_border_color(row, lv_color_hex(kBorderSoft), 0);
             lv_obj_set_style_pad_all(row, 10, 0);
+            lv_obj_set_style_shadow_width(row, 0, 0);
             lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
             lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
             lv_obj_t* state = lv_obj_create(row);
             lv_obj_set_size(state, 48, 48);
-            lv_obj_set_style_radius(state, 8, 0);
+            lv_obj_set_style_radius(state, kCardRadius, 0);
             lv_obj_set_style_bg_color(state, is_fired ? lv_color_hex(0xE6EAE8) : lv_color_hex(0xDFF4EC), 0);
             lv_obj_set_style_border_width(state, 0, 0);
             lv_obj_t* state_icon = lv_label_create(state);
@@ -1722,7 +2473,7 @@ void LcdDisplay::ShowTaskScheduler() {
             lv_obj_center(state_icon);
 
             lv_obj_t* text_box = lv_obj_create(row);
-            lv_obj_set_size(text_box, LV_HOR_RES - 122, LV_SIZE_CONTENT);
+            lv_obj_set_size(text_box, LV_HOR_RES - kPagePad * 2 - 112, LV_SIZE_CONTENT);
             lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(text_box, 0, 0);
             lv_obj_set_style_pad_all(text_box, 0, 0);
@@ -1731,8 +2482,8 @@ void LcdDisplay::ShowTaskScheduler() {
 
             lv_obj_t* row_title = lv_label_create(text_box);
             lv_label_set_text(row_title, content->valuestring);
-            lv_obj_set_width(row_title, LV_HOR_RES - 132);
-            lv_label_set_long_mode(row_title, LV_LABEL_LONG_CLIP);
+            lv_obj_set_width(row_title, LV_HOR_RES - kPagePad * 2 - 122);
+            lv_label_set_long_mode(row_title, LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_color(row_title, lv_color_hex(0x15231F), 0);
 
             lv_obj_t* row_time = lv_label_create(text_box);
@@ -1744,12 +2495,14 @@ void LcdDisplay::ShowTaskScheduler() {
 
     if (rendered == 0) {
         lv_obj_t* empty = lv_obj_create(list);
-        lv_obj_set_size(empty, LV_HOR_RES - 24, 110);
-        lv_obj_set_style_radius(empty, 8, 0);
-        lv_obj_set_style_bg_color(empty, lv_color_white(), 0);
+        lv_obj_set_size(empty, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(empty, 110, 0);
+        lv_obj_set_style_radius(empty, kCardRadius, 0);
+        lv_obj_set_style_bg_color(empty, lv_color_hex(kSurfaceCard), 0);
         lv_obj_set_style_border_width(empty, 1, 0);
         lv_obj_set_style_border_color(empty, lv_color_hex(0xD9E4DF), 0);
         lv_obj_set_style_pad_all(empty, 12, 0);
+        lv_obj_set_style_shadow_width(empty, 0, 0);
         lv_obj_set_scrollbar_mode(empty, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_flex_flow(empty, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(empty, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1760,12 +2513,12 @@ void LcdDisplay::ShowTaskScheduler() {
         lv_obj_set_style_text_color(empty_icon, lv_color_hex(0x1D6B5F), 0);
 
         lv_obj_t* empty_text = lv_label_create(empty);
-        lv_label_set_text(empty_text, "还没有定时任务");
+        lv_label_set_text(empty_text, "暂无任务");
         lv_obj_set_style_text_font(empty_text, text_font, 0);
         lv_obj_set_style_text_color(empty_text, lv_color_hex(0x15231F), 0);
 
         lv_obj_t* empty_hint = lv_label_create(empty);
-        lv_label_set_text(empty_hint, "点快捷定时，或说“30分钟后提醒我喝水”");
+        lv_label_set_text(empty_hint, "点快捷定时，或语音添加");
         lv_obj_set_width(empty_hint, LV_HOR_RES - 72);
         lv_label_set_long_mode(empty_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_align(empty_hint, LV_TEXT_ALIGN_CENTER, 0);
@@ -1797,65 +2550,34 @@ void LcdDisplay::ShowPetGarden() {
     app_detail_layer_ = lv_obj_create(screen);
     lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_radius(app_detail_layer_, 0, 0);
-    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF7F4EF), 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF6F3EE), 0);
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
-    lv_obj_set_style_pad_all(app_detail_layer_, 12, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
 
-    lv_obj_t* header = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(header, LV_HOR_RES - 24, 56);
-    lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(header, 0, 0);
-    lv_obj_set_style_pad_all(header, 0, 0);
-    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* back = lv_obj_create(header);
-    lv_obj_set_size(back, 50, 44);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0xEFE7DC), 0);
-    lv_obj_set_style_border_width(back, 0, 0);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(back, OnAppDetailBackClicked, LV_EVENT_CLICKED, this);
-    lv_obj_t* back_label = lv_label_create(back);
-    lv_label_set_text(back_label, FONT_AWESOME_ARROW_LEFT);
-    lv_obj_set_style_text_font(back_label, icon_font, 0);
-    lv_obj_set_style_text_color(back_label, lv_color_hex(0x43362A), 0);
-    lv_obj_center(back_label);
-
-    lv_obj_t* title_box = lv_obj_create(header);
-    lv_obj_set_size(title_box, LV_HOR_RES - 90, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(title_box, 0, 0);
-    lv_obj_set_style_pad_all(title_box, 0, 0);
-    lv_obj_set_style_margin_left(title_box, 10, 0);
-    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
-
-    lv_obj_t* title = lv_label_create(title_box);
-    lv_label_set_text(title, "萌宠乐园");
-    lv_obj_set_style_text_font(title, text_font, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(0x2B211A), 0);
-
-    lv_obj_t* subtitle = lv_label_create(title_box);
-    lv_label_set_text(subtitle, "宠物中心、喂养与皮肤切换");
-    lv_obj_set_width(subtitle, LV_HOR_RES - 90);
-    lv_label_set_long_mode(subtitle, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(subtitle, lv_color_hex(0x7B6A5A), 0);
+    CreateAppHeader(app_detail_layer_, "萌宠", "皮肤", lv_color_hex(0xEFE7DC),
+                    lv_color_hex(0x2B211A), lv_color_hex(0x7B6A5A));
 
     lv_obj_t* hero = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(hero, LV_HOR_RES - 24, 142);
-    lv_obj_set_style_radius(hero, 8, 0);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hero, 156, 0);
+    lv_obj_set_style_radius(hero, kCardRadius, 0);
     lv_obj_set_style_bg_color(hero, lv_color_hex(0x6E4F35), 0);
     lv_obj_set_style_border_width(hero, 0, 0);
-    lv_obj_set_style_pad_all(hero, 14, 0);
+    lv_obj_set_style_pad_all(hero, 16, 0);
+    lv_obj_set_style_shadow_width(hero, 0, 0);
     lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* avatar = lv_obj_create(hero);
-    lv_obj_set_size(avatar, 94, 94);
-    lv_obj_set_style_radius(avatar, 8, 0);
+    lv_obj_set_size(avatar, 104, 104);
+    lv_obj_set_style_radius(avatar, kCardRadius, 0);
     lv_obj_set_style_bg_color(avatar, lv_color_hex(0xF4D3A0), 0);
     lv_obj_set_style_border_width(avatar, 0, 0);
     lv_obj_t* avatar_icon = lv_label_create(avatar);
@@ -1865,7 +2587,7 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_center(avatar_icon);
 
     lv_obj_t* hero_text = lv_obj_create(hero);
-    lv_obj_set_size(hero_text, LV_HOR_RES - 150, LV_SIZE_CONTENT);
+    lv_obj_set_size(hero_text, LV_HOR_RES - kPagePad * 2 - 144, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(hero_text, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(hero_text, 0, 0);
     lv_obj_set_style_pad_all(hero_text, 0, 0);
@@ -1875,10 +2597,11 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_t* pet_name = lv_label_create(hero_text);
     lv_label_set_text(pet_name, current_style == "jinglingshu" ? "精灵鼠" : current_style.c_str());
     lv_obj_set_style_text_font(pet_name, text_font, 0);
+    lv_obj_set_style_transform_scale(pet_name, 200, 0);
     lv_obj_set_style_text_color(pet_name, lv_color_white(), 0);
 
     lv_obj_t* pet_state = lv_label_create(hero_text);
-    lv_label_set_text(pet_state, "当前皮肤目录");
+    lv_label_set_text(pet_state, "当前皮肤");
     lv_obj_set_style_text_color(pet_state, lv_color_hex(0xF6DDB9), 0);
     lv_obj_set_style_margin_top(pet_state, 4, 0);
 
@@ -1886,7 +2609,7 @@ void LcdDisplay::ShowPetGarden() {
     snprintf(style_path, sizeof(style_path), "/sdcard/style/%s", current_style.c_str());
     lv_obj_t* path_label = lv_label_create(hero_text);
     lv_label_set_text(path_label, style_path);
-    lv_obj_set_width(path_label, LV_HOR_RES - 160);
+    lv_obj_set_width(path_label, LV_HOR_RES - kPagePad * 2 - 154);
     lv_label_set_long_mode(path_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(path_label, lv_color_hex(0xF6DDB9), 0);
     lv_obj_set_style_margin_top(path_label, 8, 0);
@@ -1898,7 +2621,7 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_set_style_margin_top(section_title, 12, 0);
 
     lv_obj_t* skin_list = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(skin_list, LV_HOR_RES - 24, 168);
+    lv_obj_set_size(skin_list, LV_HOR_RES - kPagePad * 2, 206);
     lv_obj_set_style_bg_opa(skin_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(skin_list, 0, 0);
     lv_obj_set_style_pad_all(skin_list, 0, 0);
@@ -1910,12 +2633,14 @@ void LcdDisplay::ShowPetGarden() {
         const bool active = current_style == skin.style_id;
         const bool installed = FileExists(skin.directory);
         lv_obj_t* card = lv_obj_create(skin_list);
-        lv_obj_set_size(card, LV_HOR_RES - 24, 74);
-        lv_obj_set_style_radius(card, 8, 0);
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(card, 88, 0);
+        lv_obj_set_style_radius(card, kCardRadius, 0);
         lv_obj_set_style_bg_color(card, active ? lv_color_hex(0xFFF2D7) : (installed ? lv_color_white() : lv_color_hex(0xF1ECE5)), 0);
         lv_obj_set_style_border_width(card, active ? 2 : 1, 0);
         lv_obj_set_style_border_color(card, active ? lv_color_hex(0xC88932) : lv_color_hex(0xE3D8CA), 0);
         lv_obj_set_style_pad_all(card, 10, 0);
+        lv_obj_set_style_shadow_width(card, 0, 0);
         lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1924,8 +2649,8 @@ void LcdDisplay::ShowPetGarden() {
         lv_obj_add_event_cb(card, OnPetSkinClicked, LV_EVENT_CLICKED, this);
 
         lv_obj_t* icon_box = lv_obj_create(card);
-        lv_obj_set_size(icon_box, 48, 48);
-        lv_obj_set_style_radius(icon_box, 8, 0);
+        lv_obj_set_size(icon_box, 54, 54);
+        lv_obj_set_style_radius(icon_box, kCardRadius, 0);
         lv_obj_set_style_bg_color(icon_box, active ? lv_color_hex(0xC88932) : lv_color_hex(0xEFE7DC), 0);
         lv_obj_set_style_border_width(icon_box, 0, 0);
         lv_obj_t* icon = lv_label_create(icon_box);
@@ -1935,7 +2660,7 @@ void LcdDisplay::ShowPetGarden() {
         lv_obj_center(icon);
 
         lv_obj_t* text_box = lv_obj_create(card);
-        lv_obj_set_size(text_box, LV_HOR_RES - 112, LV_SIZE_CONTENT);
+        lv_obj_set_size(text_box, LV_HOR_RES - kPagePad * 2 - 120, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(text_box, 0, 0);
         lv_obj_set_style_pad_all(text_box, 0, 0);
@@ -1945,32 +2670,36 @@ void LcdDisplay::ShowPetGarden() {
         lv_obj_t* skin_title = lv_label_create(text_box);
         lv_label_set_text(skin_title, skin.title);
         lv_obj_set_style_text_font(skin_title, text_font, 0);
+        lv_obj_set_style_transform_scale(skin_title, 170, 0);
         lv_obj_set_style_text_color(skin_title, lv_color_hex(0x2B211A), 0);
 
         lv_obj_t* skin_subtitle = lv_label_create(text_box);
         char skin_subtitle_text[128];
-        snprintf(skin_subtitle_text, sizeof(skin_subtitle_text), "%s  %s", installed ? "可用" : "待安装", skin.directory);
+        snprintf(skin_subtitle_text, sizeof(skin_subtitle_text), "%s", installed ? "可用" : "待安装");
         lv_label_set_text(skin_subtitle, skin_subtitle_text);
-        lv_obj_set_width(skin_subtitle, LV_HOR_RES - 124);
+        lv_obj_set_width(skin_subtitle, LV_HOR_RES - kPagePad * 2 - 132);
         lv_label_set_long_mode(skin_subtitle, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_color(skin_subtitle, lv_color_hex(0x7B6A5A), 0);
     }
 
     lv_obj_t* hint = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(hint, LV_HOR_RES - 24, 96);
-    lv_obj_set_style_radius(hint, 8, 0);
-    lv_obj_set_style_bg_color(hint, lv_color_white(), 0);
+    lv_obj_set_size(hint, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(hint, 88, 0);
+    lv_obj_set_style_radius(hint, kCardRadius, 0);
+    lv_obj_set_style_bg_color(hint, lv_color_hex(kSurfaceCard), 0);
     lv_obj_set_style_border_width(hint, 1, 0);
     lv_obj_set_style_border_color(hint, lv_color_hex(0xE3D8CA), 0);
     lv_obj_set_style_pad_all(hint, 12, 0);
+    lv_obj_set_style_shadow_width(hint, 0, 0);
     lv_obj_set_scrollbar_mode(hint, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(hint, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(hint, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* hint_text = lv_label_create(hint);
     lv_label_set_text(hint_text, "新增皮肤时保持 MJPEG 文件名一致，只新增目录，例如 /sdcard/style/xiaotu/idle.mjpeg。");
     lv_obj_set_width(hint_text, LV_HOR_RES - 54);
     lv_label_set_long_mode(hint_text, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(hint_text, lv_color_hex(0x57483A), 0);
-    lv_obj_center(hint_text);
 
     lv_obj_move_foreground(app_detail_layer_);
 }

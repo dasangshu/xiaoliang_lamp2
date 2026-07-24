@@ -1,6 +1,12 @@
 #include "audio_service.h"
 #include <esp_log.h>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+
+#include "esp_audio_dec_default.h"
+#include "esp_audio_simple_dec.h"
+#include "esp_audio_simple_dec_default.h"
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
     (esp_ae_rate_cvt_cfg_t)                                  \
@@ -36,6 +42,14 @@
 #endif
 
 #define TAG "AudioService"
+
+namespace {
+struct LocalAudioTaskContext {
+    AudioService* service;
+    char* path;
+    uint32_t generation;
+};
+}  // namespace
 
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
@@ -120,6 +134,15 @@ void AudioService::Initialize(AudioCodec* codec) {
         .skip_unhandled_events = true,
     };
     esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
+
+    auto dec_ret = esp_audio_dec_register_default();
+    if (dec_ret != ESP_AUDIO_ERR_OK) {
+        ESP_LOGW(TAG, "Failed to register default audio decoders: %d", dec_ret);
+    }
+    auto simple_dec_ret = esp_audio_simple_dec_register_default();
+    if (simple_dec_ret != ESP_AUDIO_ERR_OK) {
+        ESP_LOGW(TAG, "Failed to register default simple audio decoders: %d", simple_dec_ret);
+    }
 }
 
 void AudioService::Start() {
@@ -228,6 +251,9 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 }
 
 void AudioService::AudioInputTask() {
+    TickType_t last_wake_feed_log_tick = 0;
+    uint32_t last_wake_input_count = 0;
+
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
             AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING,
@@ -272,6 +298,15 @@ void AudioService::AudioInputTask() {
             if (ReadAudioData(data, 16000, samples)) {
                 if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
                     wake_word_->Feed(data);
+                    auto now = xTaskGetTickCount();
+                    if ((now - last_wake_feed_log_tick) * portTICK_PERIOD_MS > 5000) {
+                        ESP_LOGI(TAG, "Wake word feed active, input_count=%lu (+%lu/5s), samples=%d, channels=%d",
+                                 (unsigned long)debug_statistics_.input_count,
+                                 (unsigned long)(debug_statistics_.input_count - last_wake_input_count),
+                                 samples, codec_->input_channels());
+                        last_wake_feed_log_tick = now;
+                        last_wake_input_count = debug_statistics_.input_count;
+                    }
                 }
                 if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
                     audio_processor_->Feed(std::move(data));
@@ -548,10 +583,12 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 
 void AudioService::EnableWakeWordDetection(bool enable) {
     if (!wake_word_) {
+        ESP_LOGW(TAG, "Cannot %s wake word detection: wake word is not configured",
+                 enable ? "enable" : "disable");
         return;
     }
 
-    ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
+    ESP_LOGI(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
         if (!wake_word_initialized_) {
             if (!wake_word_->Initialize(codec_, models_list_)) {
@@ -570,9 +607,13 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         }
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        ESP_LOGI(TAG, "Wake word detection enabled, event_bits=0x%lx",
+                 (unsigned long)xEventGroupGetBits(event_group_));
     } else {
         wake_word_->Stop();
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        ESP_LOGI(TAG, "Wake word detection disabled, event_bits=0x%lx",
+                 (unsigned long)xEventGroupGetBits(event_group_));
     }
 }
 
@@ -653,6 +694,191 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     demuxer->Process(buf, size);
 }
 
+bool AudioService::PlayAudioFile(const char* path) {
+    if (path == nullptr || path[0] == '\0') {
+        ESP_LOGE(TAG, "PlayAudioFile called with empty path");
+        return false;
+    }
+
+    FILE* fp = fopen(path, "rb");
+    if (fp == nullptr) {
+        ESP_LOGE(TAG, "Audio file not found: %s", path);
+        return false;
+    }
+    fclose(fp);
+
+    ResetDecoder();
+    const uint32_t generation = local_playback_generation_.fetch_add(1) + 1;
+    char* task_path = strdup(path);
+    if (task_path == nullptr) {
+        ESP_LOGE(TAG, "No memory for audio file path");
+        return false;
+    }
+
+    auto* ctx = new LocalAudioTaskContext{this, task_path, generation};
+    BaseType_t ok = xTaskCreate([](void* arg) {
+        auto* ctx = static_cast<LocalAudioTaskContext*>(arg);
+        AudioService* service = ctx->service;
+        char* path = ctx->path;
+        uint32_t generation = ctx->generation;
+        delete ctx;
+        service->RunLocalAudioFileTask(path, generation);
+        free(path);
+        vTaskDelete(nullptr);
+    }, "local_audio_file", 4096 * 3, ctx, 3, nullptr);
+
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create local audio playback task");
+        delete ctx;
+        free(task_path);
+        return false;
+    }
+    return true;
+}
+
+void AudioService::RunLocalAudioFileTask(const char* path, uint32_t generation) {
+    ESP_LOGI(TAG, "Start local audio file: %s", path);
+    FILE* fp = fopen(path, "rb");
+    if (fp == nullptr) {
+        ESP_LOGE(TAG, "Failed to open audio file: %s", path);
+        return;
+    }
+
+    esp_audio_simple_dec_cfg_t dec_cfg = {
+        .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,
+        .dec_cfg = nullptr,
+        .cfg_size = 0,
+        .use_frame_dec = false,
+    };
+    esp_audio_simple_dec_handle_t decoder = nullptr;
+    auto ret = esp_audio_simple_dec_open(&dec_cfg, &decoder);
+    if (ret != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to open MP3 decoder: %d", ret);
+        fclose(fp);
+        return;
+    }
+
+    constexpr size_t kInputBufferSize = 2048;
+    size_t output_buffer_size = 8192;
+    auto* input_buffer = static_cast<uint8_t*>(malloc(kInputBufferSize));
+    auto* output_buffer = static_cast<uint8_t*>(malloc(output_buffer_size));
+    esp_ae_rate_cvt_handle_t local_resampler = nullptr;
+    uint32_t local_resampler_rate = 0;
+    uint8_t local_resampler_channel = 0;
+    if (input_buffer == nullptr || output_buffer == nullptr) {
+        ESP_LOGE(TAG, "No memory for local audio buffers");
+        free(input_buffer);
+        free(output_buffer);
+        esp_audio_simple_dec_close(decoder);
+        fclose(fp);
+        return;
+    }
+
+    if (!codec_->output_enabled()) {
+        esp_timer_stop(audio_power_timer_);
+        esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+        codec_->EnableOutput(true);
+    }
+
+    while (!service_stopped_ && generation == local_playback_generation_.load()) {
+        size_t read_len = fread(input_buffer, 1, kInputBufferSize, fp);
+        if (read_len == 0) {
+            break;
+        }
+
+        esp_audio_simple_dec_raw_t raw = {
+            .buffer = input_buffer,
+            .len = static_cast<uint32_t>(read_len),
+            .eos = feof(fp) != 0,
+            .consumed = 0,
+            .frame_recover = ESP_AUDIO_SIMPLE_DEC_RECOVERY_NONE,
+        };
+
+        while (raw.len > 0 && !service_stopped_ && generation == local_playback_generation_.load()) {
+            esp_audio_simple_dec_out_t out_frame = {
+                .buffer = output_buffer,
+                .len = static_cast<uint32_t>(output_buffer_size),
+                .needed_size = 0,
+                .decoded_size = 0,
+            };
+            ret = esp_audio_simple_dec_process(decoder, &raw, &out_frame);
+            if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+                auto* new_output = static_cast<uint8_t*>(realloc(output_buffer, out_frame.needed_size));
+                if (new_output == nullptr) {
+                    ESP_LOGE(TAG, "No memory to resize audio output buffer");
+                    break;
+                }
+                output_buffer = new_output;
+                output_buffer_size = out_frame.needed_size;
+                continue;
+            }
+            if (ret != ESP_AUDIO_ERR_OK) {
+                ESP_LOGE(TAG, "MP3 decode failed: %d", ret);
+                break;
+            }
+            if (out_frame.decoded_size > 0) {
+                esp_audio_simple_dec_info_t info = {};
+                if (esp_audio_simple_dec_get_info(decoder, &info) == ESP_AUDIO_ERR_OK &&
+                    info.bits_per_sample == 16 && info.channel > 0) {
+                    auto samples = out_frame.decoded_size / sizeof(int16_t);
+                    auto* pcm = reinterpret_cast<int16_t*>(output_buffer);
+                    std::vector<int16_t> mono;
+                    if (info.channel == 1) {
+                        mono.assign(pcm, pcm + samples);
+                    } else {
+                        mono.reserve(samples / info.channel);
+                        for (size_t i = 0; i + info.channel <= samples; i += info.channel) {
+                            mono.push_back(pcm[i]);
+                        }
+                    }
+                    if (info.sample_rate != static_cast<uint32_t>(codec_->output_sample_rate())) {
+                        if (local_resampler == nullptr || local_resampler_rate != info.sample_rate ||
+                            local_resampler_channel != 1) {
+                            if (local_resampler != nullptr) {
+                                esp_ae_rate_cvt_close(local_resampler);
+                                local_resampler = nullptr;
+                            }
+                            esp_ae_rate_cvt_cfg_t resampler_cfg = RATE_CVT_CFG(
+                                info.sample_rate, codec_->output_sample_rate(), ESP_AUDIO_MONO);
+                            auto resampler_ret = esp_ae_rate_cvt_open(&resampler_cfg, &local_resampler);
+                            if (local_resampler == nullptr) {
+                                ESP_LOGE(TAG, "Failed to create local output resampler: %d", resampler_ret);
+                                break;
+                            }
+                            local_resampler_rate = info.sample_rate;
+                            local_resampler_channel = 1;
+                        }
+                        uint32_t target_size = 0;
+                        esp_ae_rate_cvt_get_max_out_sample_num(local_resampler, mono.size(), &target_size);
+                        std::vector<int16_t> resampled(target_size);
+                        uint32_t actual_output = target_size;
+                        esp_ae_rate_cvt_process(local_resampler, (esp_ae_sample_t)mono.data(), mono.size(),
+                                                (esp_ae_sample_t)resampled.data(), &actual_output);
+                        resampled.resize(actual_output);
+                        mono = std::move(resampled);
+                    }
+                    codec_->OutputData(mono);
+                    last_output_time_ = std::chrono::steady_clock::now();
+                }
+            }
+            if (raw.consumed == 0) {
+                break;
+            }
+            raw.len -= raw.consumed;
+            raw.buffer += raw.consumed;
+        }
+    }
+
+    free(input_buffer);
+    free(output_buffer);
+    if (local_resampler != nullptr) {
+        esp_ae_rate_cvt_close(local_resampler);
+    }
+    esp_audio_simple_dec_close(decoder);
+    fclose(fp);
+    ESP_LOGI(TAG, "Stop local audio file: %s", path);
+}
+
 bool AudioService::IsIdle() {
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return audio_encode_queue_.empty() && audio_decode_queue_.empty() && audio_playback_queue_.empty() && audio_testing_queue_.empty();
@@ -679,6 +905,7 @@ void AudioService::WaitForPlaybackQueueEmpty() {
 }
 
 void AudioService::ResetDecoder() {
+    local_playback_generation_.fetch_add(1);
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
     if (opus_decoder_ != nullptr) {
@@ -716,16 +943,21 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
     if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<CustomWakeWord>();
+        ESP_LOGI(TAG, "Wake word backend: CustomWakeWord");
     } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<AfeWakeWord>();
+        ESP_LOGI(TAG, "Wake word backend: AfeWakeWord");
     } else {
         wake_word_ = nullptr;
+        ESP_LOGW(TAG, "Wake word backend: none, no wake net model found");
     }
 #else
     if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<EspWakeWord>();
+        ESP_LOGI(TAG, "Wake word backend: EspWakeWord");
     } else {
         wake_word_ = nullptr;
+        ESP_LOGW(TAG, "Wake word backend: none, no wake net model found");
     }
 #endif
 

@@ -49,9 +49,29 @@ void Protocol::SendAbortSpeaking(AbortReason reason) {
 }
 
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {
-    std::string json = "{\"session_id\":\"" + session_id_ + 
-                      "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word + "\"}";
-    SendText(json);
+    SendTextInput(wake_word);
+}
+
+void Protocol::SendTextInput(const std::string& text) {
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        ESP_LOGE(TAG, "Failed to create text input JSON");
+        return;
+    }
+
+    cJSON_AddStringToObject(root, "session_id", session_id_.c_str());
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", text.c_str());
+
+    char* json = cJSON_PrintUnformatted(root);
+    if (json != nullptr) {
+        SendText(json);
+        cJSON_free(json);
+    } else {
+        ESP_LOGE(TAG, "Failed to serialize text input JSON");
+    }
+    cJSON_Delete(root);
 }
 
 void Protocol::SendStartListening(ListeningMode mode) {
@@ -65,6 +85,8 @@ void Protocol::SendStartListening(ListeningMode mode) {
         message += ",\"mode\":\"manual\"";
     }
     message += "}";
+    ESP_LOGI(TAG, "Send listen start: %s", mode == kListeningModeRealtime ? "realtime" :
+             (mode == kListeningModeAutoStop ? "auto" : "manual"));
     SendText(message);
 }
 

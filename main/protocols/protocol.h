@@ -69,6 +69,7 @@ public:
     virtual bool IsAudioChannelOpened() const = 0;
     virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
     virtual void SendWakeWordDetected(const std::string& wake_word);
+    virtual void SendTextInput(const std::string& text);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();
     virtual void SendAbortSpeaking(AbortReason reason);

@@ -70,11 +70,13 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     for (int i = 0; i < ref_num; i++) {
         input_format.push_back('R');
     }
+    ESP_LOGI(TAG, "AFE input format: %s, codec channels=%d, reference=%d",
+             input_format.c_str(), codec_->input_channels(), codec_->input_reference());
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     afe_config->aec_init = codec_->input_reference();
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
     afe_config->afe_perferred_core = 1;
-    afe_config->afe_perferred_priority = 1;
+    afe_config->afe_perferred_priority = 5;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
     
     afe_iface_ = esp_afe_handle_from_config(afe_config);
@@ -84,7 +86,7 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
         auto this_ = (AfeWakeWord*)arg;
         this_->AudioDetectionTask();
         vTaskDelete(NULL);
-    }, "audio_detection", 4096, this, 3, nullptr);
+    }, "audio_detection", 4096, this, 5, nullptr);
 
     return true;
 }

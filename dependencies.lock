@@ -170,7 +170,7 @@ dependencies:
     - name: espressif/esp_new_jpeg
       version: ^0.6.1
     source:
-      path: F:\Github\xiaoliang_lamp2\components\esp-dl
+      path: /Users/swf/www/xiaoliang/xiaozhi-esp32-kevin/components/esp-dl
       type: local
     targets:
     - esp32
@@ -1029,7 +1029,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.5
+    version: 5.5.4
   laride/heatshrink:
     component_hash: 0828b0fea3f0754f8404a5279e883c52fe27494bbe1762e38d5cd96c99229e47
     dependencies:

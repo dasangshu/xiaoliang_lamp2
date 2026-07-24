@@ -53,6 +53,8 @@ protected:
     void InitializeLcdThemes();
     void CreateTouchAppLauncher(lv_obj_t* screen);
     void BringTouchAppLauncherToFront();
+    lv_obj_t* CreateAppHeader(lv_obj_t* parent, const char* title, const char* subtitle,
+                              lv_color_t back_bg_color, lv_color_t text_color, lv_color_t subtext_color);
     void ShowAppGrid();
     void HideAppGrid();
     void ShowAppDetail(const char* title, const char* subtitle, const char* const* actions, size_t action_count);
@@ -77,6 +79,8 @@ protected:
     static void OnAppDetailBackClicked(lv_event_t* event);
     static void OnAppModuleClicked(lv_event_t* event);
     static void OnAppActionClicked(lv_event_t* event);
+    static void OnMusicSceneClicked(lv_event_t* event);
+    static void OnAiScenarioClicked(lv_event_t* event);
     static void OnTaskQuickTimerClicked(lv_event_t* event);
     static void OnPetSkinClicked(lv_event_t* event);
     virtual bool Lock(int timeout_ms = 0) override;
