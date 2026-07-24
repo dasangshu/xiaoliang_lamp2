@@ -119,7 +119,7 @@ void Application::Initialize() {
         .core_id = -1,     // let the scheduler place MJPEG; do not pin heavy JPEG decode to CPU0
         .use_psram = true,
         .task_priority = 1,    // keep MJPEG below audio and wake-word paths
-        .target_fps = 8        // talk/bye are raised to 15fps per file in mjpeg_player_port
+        .target_fps = 30
     };
     mjpeg_player_port_init(&mjpeg_config);
 
@@ -1045,23 +1045,17 @@ void Application::FinishIdleEmotionPreroll(uint32_t session_id) {
         return;
     }
 
-    StopIdleMjpegIfNeeded(true);
+    idle_mjpeg_active_ = false;
     audio_service_.EnableWakeWordDetection(true);
 }
 
 void Application::StopIdleMjpegIfNeeded(bool force) {
-    if (!idle_mjpeg_active_) {
+    if (GetDeviceState() == kDeviceStateIdle) {
         return;
     }
-    if (!force) {
-        if (GetDeviceState() != kDeviceStateIdle) {
-            idle_mjpeg_active_ = false;
-            return;
-        }
-        TickType_t now = xTaskGetTickCount();
-        if ((now - idle_mjpeg_started_tick_) * portTICK_PERIOD_MS < kIdleMjpegPrerollMs) {
-            return;
-        }
+
+    if (!idle_mjpeg_active_ && !force) {
+        return;
     }
 
     idle_mjpeg_active_ = false;

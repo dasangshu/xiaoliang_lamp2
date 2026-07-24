@@ -6,11 +6,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <inttypes.h>
 
-// Reuse the existing jpeg_to_image from the current project
-// This handles both HW (P4) and SW JPEG decoding automatically
 esp_err_t jpeg_to_image(const uint8_t *src, size_t src_len, uint8_t **out, size_t *out_len,
                         size_t *width, size_t *height, size_t *stride);
+esp_err_t jpeg_to_image_into(const uint8_t *src, size_t src_len, uint8_t *out_buf, size_t out_buf_size,
+                             size_t *out_len, size_t *width, size_t *height, size_t *stride);
+void jpeg_decoder_warmup(void);
 
 static const char *TAG = "mjpeg_player";
 
@@ -26,11 +28,135 @@ typedef struct {
     size_t cache_buff_size;
 
     void (*on_frame_cb)(uint8_t *rgb565, uint32_t width, uint32_t height, void *ctx);
+    uint8_t *(*acquire_rgb_buffer)(size_t min_bytes, size_t *out_size, void *ctx);
+    void (*present_rgb_buffer)(uint8_t *buf, uint32_t width, uint32_t height, void *ctx);
+    void *buffer_ctx;
     void *user_data;
     UBaseType_t task_priority;
     int task_core;
     uint32_t target_fps;
 } mjpeg_player_t;
+
+static bool mjpeg_player_decode_frame(mjpeg_player_t *player, const uint8_t *jpeg, size_t jpeg_len,
+                                      uint32_t *frame_counter) {
+    size_t out_len = 0;
+    size_t out_width = 0;
+    size_t out_height = 0;
+    size_t out_stride = 0;
+    esp_err_t ret = ESP_FAIL;
+
+    if (player->acquire_rgb_buffer && player->present_rgb_buffer) {
+        size_t target_size = 0;
+        uint8_t *target = player->acquire_rgb_buffer(jpeg_len, &target_size, player->buffer_ctx);
+        if (target != NULL) {
+            ret = jpeg_to_image_into(jpeg, jpeg_len, target, target_size, &out_len, &out_width, &out_height, &out_stride);
+            if (ret == ESP_OK) {
+                player->present_rgb_buffer(target, (uint32_t)out_width, (uint32_t)out_height, player->buffer_ctx);
+                (*frame_counter)++;
+                return true;
+            }
+        }
+    }
+
+    uint8_t *out_data = NULL;
+    ret = jpeg_to_image(jpeg, jpeg_len, &out_data, &out_len, &out_width, &out_height, &out_stride);
+    if (ret == ESP_OK && out_data != NULL) {
+        if (player->on_frame_cb) {
+            player->on_frame_cb(out_data, (uint32_t)out_width, (uint32_t)out_height, player->user_data);
+        }
+        heap_caps_free(out_data);
+        (*frame_counter)++;
+        return true;
+    }
+
+    static int last_err = 0;
+    if (ret != last_err) {
+        ESP_LOGW(TAG, "JPEG decode failed: %d frame_size=%u", ret, (unsigned)jpeg_len);
+        last_err = ret;
+    }
+    return false;
+}
+
+static void mjpeg_player_wait_frame_interval(TickType_t *frame_start_tick, TickType_t frame_interval_ticks,
+                                             TickType_t min_frame_yield_ticks) {
+    if (frame_interval_ticks > 0) {
+        TickType_t elapsed = xTaskGetTickCount() - *frame_start_tick;
+        if (elapsed < frame_interval_ticks) {
+            vTaskDelay(frame_interval_ticks - elapsed);
+        } else {
+            vTaskDelay(min_frame_yield_ticks);
+        }
+    } else {
+        vTaskDelay(min_frame_yield_ticks);
+    }
+    *frame_start_tick = xTaskGetTickCount();
+}
+
+static bool mjpeg_player_find_jpeg_frame(const uint8_t *data, size_t size, size_t *pos,
+                                         const uint8_t **frame_start, size_t *frame_len) {
+    while (*pos + 1 < size) {
+        if (data[*pos] == 0xFF && data[*pos + 1] == 0xD8) {
+            size_t start = *pos;
+            *pos += 2;
+            while (*pos + 1 < size) {
+                if (data[*pos] == 0xFF && data[*pos + 1] == 0xD9) {
+                    *pos += 2;
+                    *frame_start = data + start;
+                    *frame_len = *pos - start;
+                    return true;
+                }
+                (*pos)++;
+            }
+            return false;
+        }
+        (*pos)++;
+    }
+    return false;
+}
+
+static void mjpeg_player_process_byte(mjpeg_player_t *player, uint8_t byte, bool *collecting_frame,
+                                      uint8_t *previous_byte, size_t *frame_size,
+                                      uint32_t *frame_counter, uint32_t *dropped_frames,
+                                      TickType_t *frame_start_tick, TickType_t frame_interval_ticks,
+                                      TickType_t min_frame_yield_ticks) {
+    if (!*collecting_frame) {
+        if (*previous_byte == 0xFF && byte == 0xD8) {
+            *collecting_frame = true;
+            *frame_size = 0;
+            player->in_buff[(*frame_size)++] = 0xFF;
+            player->in_buff[(*frame_size)++] = 0xD8;
+        }
+        *previous_byte = byte;
+        return;
+    }
+
+    if (*frame_size >= player->in_buff_size) {
+        (*dropped_frames)++;
+        if (((*dropped_frames) & 0x07) == 1) {
+            ESP_LOGW(TAG, "JPEG frame exceeds input buffer (%u bytes), dropping (count=%u)",
+                     (unsigned)player->in_buff_size, (unsigned)(*dropped_frames));
+        }
+        *collecting_frame = false;
+        *frame_size = 0;
+        *previous_byte = byte;
+        return;
+    }
+
+    player->in_buff[(*frame_size)++] = byte;
+
+    if (*previous_byte == 0xFF && byte == 0xD9) {
+        if (mjpeg_player_decode_frame(player, player->in_buff, *frame_size, frame_counter)) {
+            mjpeg_player_wait_frame_interval(frame_start_tick, frame_interval_ticks, min_frame_yield_ticks);
+        }
+
+        *collecting_frame = false;
+        *frame_size = 0;
+        *previous_byte = byte;
+        return;
+    }
+
+    *previous_byte = byte;
+}
 
 static void mjpeg_player_task(void *arg) {
     mjpeg_player_t *player = (mjpeg_player_t *)arg;
@@ -42,104 +168,70 @@ static void mjpeg_player_task(void *arg) {
     size_t frame_size = 0;
     TickType_t frame_interval_ticks = (player->target_fps > 0)
         ? pdMS_TO_TICKS(1000 / player->target_fps) : 0;
-    const TickType_t min_frame_yield_ticks = pdMS_TO_TICKS(10);
+    const TickType_t min_frame_yield_ticks = pdMS_TO_TICKS(1);
 
     ESP_LOGI(TAG, "MJPEG player task started (target_fps=%u)", (unsigned)player->target_fps);
 
     TickType_t frame_start_tick = xTaskGetTickCount();
-    while (player->is_playing) {
-        bytes_read = media_src_storage_read(&player->file, player->cache_buff, player->cache_buff_size);
 
-        if (bytes_read <= 0) {
-            if (player->is_loop) {
-                ESP_LOGD(TAG, "End of file, restarting loop...");
-                media_src_storage_seek(&player->file, 0);
-                collecting_frame = false;
-                previous_byte = 0;
-                frame_size = 0;
-                continue;
-            }
-            ESP_LOGD(TAG, "End of file, stopping playback");
-            break;
-        }
+    const uint8_t *preload_data = NULL;
+    size_t preload_size = 0;
+    size_t preload_pos = 0;
+    bool use_preload = media_src_storage_is_preloaded(&player->file) &&
+        media_src_storage_get_preload_view(&player->file, &preload_data, &preload_size, &preload_pos) == 0;
 
-        for (size_t i = 0; i < bytes_read && player->is_playing; i++) {
-            uint8_t byte = player->cache_buff[i];
-
-            if (!collecting_frame) {
-                if (previous_byte == 0xFF && byte == 0xD8) {
-                    collecting_frame = true;
-                    frame_size = 0;
-                    player->in_buff[frame_size++] = 0xFF;
-                    player->in_buff[frame_size++] = 0xD8;
+    if (use_preload) {
+        ESP_LOGI(TAG, "Using preloaded PSRAM buffer (%u bytes)", (unsigned)preload_size);
+        while (player->is_playing) {
+            const uint8_t *frame_start = NULL;
+            size_t frame_len = 0;
+            if (!mjpeg_player_find_jpeg_frame(preload_data, preload_size, &preload_pos, &frame_start, &frame_len)) {
+                if (player->is_loop) {
+                    preload_pos = 0;
+                    continue;
                 }
-                previous_byte = byte;
-                continue;
+                break;
             }
 
-            if (frame_size >= player->in_buff_size) {
+            if (frame_len <= player->in_buff_size &&
+                mjpeg_player_decode_frame(player, frame_start, frame_len, &frame_counter)) {
+                mjpeg_player_wait_frame_interval(&frame_start_tick, frame_interval_ticks, min_frame_yield_ticks);
+            } else if (frame_len > player->in_buff_size) {
                 dropped_frames++;
                 if ((dropped_frames & 0x07) == 1) {
                     ESP_LOGW(TAG, "JPEG frame exceeds input buffer (%u bytes), dropping (count=%u)",
                              (unsigned)player->in_buff_size, (unsigned)dropped_frames);
                 }
-                collecting_frame = false;
-                frame_size = 0;
-                previous_byte = byte;
-                continue;
+            }
+        }
+        media_src_storage_set_preload_pos(&player->file, preload_pos);
+    } else {
+        while (player->is_playing) {
+            bytes_read = media_src_storage_read(&player->file, player->cache_buff, player->cache_buff_size);
+
+            if (bytes_read <= 0) {
+                if (player->is_loop) {
+                    ESP_LOGD(TAG, "End of file, restarting loop...");
+                    media_src_storage_seek(&player->file, 0);
+                    collecting_frame = false;
+                    previous_byte = 0;
+                    frame_size = 0;
+                    continue;
+                }
+                ESP_LOGD(TAG, "End of file, stopping playback");
+                break;
             }
 
-            player->in_buff[frame_size++] = byte;
-
-            if (previous_byte == 0xFF && byte == 0xD9) {
-                uint8_t *out_data = NULL;
-                size_t out_len = 0;
-                size_t out_width = 0;
-                size_t out_height = 0;
-                size_t out_stride = 0;
-
-                esp_err_t ret = jpeg_to_image(player->in_buff, frame_size,
-                                              &out_data, &out_len,
-                                              &out_width, &out_height, &out_stride);
-                if (ret == ESP_OK && out_data != NULL) {
-                    if (player->on_frame_cb) {
-                        player->on_frame_cb(out_data, (uint32_t)out_width,
-                                            (uint32_t)out_height, player->user_data);
-                    }
-                    heap_caps_free(out_data);
-                    frame_counter++;
-                } else {
-                    static int last_err = 0;
-                    if (ret != last_err) {
-                        ESP_LOGW(TAG, "JPEG decode failed: %d frame_size=%zu",
-                                 ret, frame_size);
-                        last_err = ret;
-                    }
-                }
-
-                collecting_frame = false;
-                frame_size = 0;
-
-                // Frame rate control: sleep remainder of frame interval so audio/wake-word tasks get CPU
-                if (frame_interval_ticks > 0) {
-                    TickType_t elapsed = xTaskGetTickCount() - frame_start_tick;
-                    if (elapsed < frame_interval_ticks) {
-                        vTaskDelay(frame_interval_ticks - elapsed);
-                    } else {
-                        vTaskDelay(min_frame_yield_ticks);
-                    }
-                } else {
-                    vTaskDelay(min_frame_yield_ticks);
-                }
-                frame_start_tick = xTaskGetTickCount();
+            for (size_t i = 0; i < bytes_read && player->is_playing; i++) {
+                mjpeg_player_process_byte(player, player->cache_buff[i], &collecting_frame, &previous_byte,
+                                          &frame_size, &frame_counter, &dropped_frames, &frame_start_tick,
+                                          frame_interval_ticks, min_frame_yield_ticks);
             }
-
-            previous_byte = byte;
         }
     }
 
     player->is_playing = false;
-    ESP_LOGI(TAG, "MJPEG player task finished (frames: %u)", frame_counter);
+    ESP_LOGI(TAG, "MJPEG player task finished (frames: %u)", (unsigned)frame_counter);
     player->task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -172,7 +264,6 @@ esp_err_t mjpeg_player_create(const mjpeg_player_config_t *config, mjpeg_player_
     player->cache_buff_size = config->cache_buffer_size ? config->cache_buffer_size : 32 * 1024;
 #endif
 
-    // Allocate input buffer in PSRAM to avoid starving internal RAM (used by AFE, etc.)
     player->in_buff = heap_caps_malloc(player->in_buff_size, MALLOC_CAP_SPIRAM);
     if (!player->in_buff) {
         ESP_LOGE(TAG, "Failed to allocate input buffer");
@@ -208,9 +299,19 @@ esp_err_t mjpeg_player_create(const mjpeg_player_config_t *config, mjpeg_player_
         return ESP_FAIL;
     }
 
+#if CONFIG_SPIRAM
+    bool preload_enabled = config->preload_to_psram;
+#else
+    bool preload_enabled = false;
+#endif
+    media_src_storage_set_preload(&player->file, preload_enabled);
+
     player->on_frame_cb = config->on_frame_cb;
+    player->acquire_rgb_buffer = config->acquire_rgb_buffer;
+    player->present_rgb_buffer = config->present_rgb_buffer;
+    player->buffer_ctx = config->buffer_ctx;
     player->user_data = config->user_data;
-    player->target_fps = (config->target_fps > 0) ? config->target_fps : 15;
+    player->target_fps = (config->target_fps > 0) ? config->target_fps : 30;
 
     UBaseType_t requested_priority = (config->task_priority > 0) ? (UBaseType_t)config->task_priority : (tskIDLE_PRIORITY + 5);
     if (requested_priority >= configMAX_PRIORITIES) {
@@ -320,7 +421,7 @@ esp_err_t mjpeg_player_set_target_fps(mjpeg_player_handle_t handle, uint32_t fps
     if (!player) {
         return ESP_ERR_INVALID_ARG;
     }
-    player->target_fps = fps > 0 ? fps : 15;
+    player->target_fps = fps > 0 ? fps : 30;
     return ESP_OK;
 }
 

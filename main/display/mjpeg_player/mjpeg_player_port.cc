@@ -5,18 +5,32 @@
 #include "board.h"
 #include "display.h"
 #include "lvgl_display.h"
+#include "lcd_display.h"
+#include "lvgl_display/jpg/jpeg_to_image.h"
 #include <string.h>
 #include "freertos/task.h"
 
 static const char *TAG = "mjpeg_player_port";
 
+static uint8_t* player_acquire_rgb_buffer(size_t min_bytes, size_t *out_size, void *ctx) {
+    (void)ctx;
+    auto display = dynamic_cast<LcdDisplay *>(Board::GetInstance().GetDisplay());
+    if (!display) {
+        return nullptr;
+    }
+    return display->AcquireFaceDecodeBuffer(min_bytes, out_size);
+}
+
+static void player_present_rgb_buffer(uint8_t *buf, uint32_t width, uint32_t height, void *ctx) {
+    (void)ctx;
+    auto display = dynamic_cast<LcdDisplay *>(Board::GetInstance().GetDisplay());
+    if (display) {
+        display->PresentFaceDecodeBuffer(buf, width, height);
+    }
+}
+
 static void player_frame_callback(uint8_t *rgb565, uint32_t width, uint32_t height, void *ctx) {
     (void)ctx;
-    static uint32_t s_frame_count = 0;
-    s_frame_count++;
-    if ((s_frame_count & 0x3F) == 1) {
-        ESP_LOGI(TAG, "MJPEG frame cb: %ux%u, count=%u", width, height, s_frame_count);
-    }
     auto display = dynamic_cast<LvglDisplay *>(Board::GetInstance().GetDisplay());
     if (display) {
         display->SetFaceImage(rgb565, width, height);
@@ -85,42 +99,8 @@ static bool set_player_state(player_state_t new_state) {
 }
 
 static uint32_t target_fps_for_file(const char *filepath) {
-    if (filepath == NULL) {
-        return 6;
-    }
-
-    static const char* kFastMjpegFiles[] = {
-        "talk.mjpeg",
-        "bye.mjpeg",
-        "happy.mjpeg",
-        "laughing.mjpeg",
-        "funny.mjpeg",
-        "sad.mjpeg",
-        "angry.mjpeg",
-        "crying.mjpeg",
-        "loving.mjpeg",
-        "embarrassed.mjpeg",
-        "surprised.mjpeg",
-        "shocked.mjpeg",
-        "thinking.mjpeg",
-        "winking.mjpeg",
-        "cool.mjpeg",
-        "relaxed.mjpeg",
-        "delicious.mjpeg",
-        "kissy.mjpeg",
-        "confident.mjpeg",
-        "sleepy.mjpeg",
-        "silly.mjpeg",
-        "confused.mjpeg",
-        "confuesed.mjpeg",
-    };
-    for (const auto* file : kFastMjpegFiles) {
-        if (strstr(filepath, file) != NULL) {
-            return 15;
-        }
-    }
-
-    return 6;
+    (void)filepath;
+    return 30;
 }
 
 static esp_err_t safe_stop_player(uint32_t timeout_ms) {
@@ -313,12 +293,18 @@ esp_err_t mjpeg_player_port_init(mjpeg_player_port_config_t *config) {
         .frame_buffer_size = config->buffer_size ? config->buffer_size : 150 * 1024,
         .cache_buffer_size = config->buffer_size ? config->buffer_size : 128 * 1024,
         .cache_in_psram = config->use_psram,
+        .preload_to_psram = config->use_psram,
         .task_priority = config->task_priority,
         .task_core = config->core_id,
-        .target_fps = config->target_fps > 0 ? config->target_fps : 15,
+        .target_fps = config->target_fps > 0 ? config->target_fps : 30,
+        .acquire_rgb_buffer = player_acquire_rgb_buffer,
+        .present_rgb_buffer = player_present_rgb_buffer,
+        .buffer_ctx = NULL,
         .on_frame_cb = player_frame_callback,
         .user_data = NULL
     };
+
+    jpeg_decoder_warmup();
 
     // Create player first with a temporary callback, then set the real one
     ret = mjpeg_player_create(&player_config, &s_player.handle);
