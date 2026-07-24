@@ -47,6 +47,7 @@ protected:
     volatile uint32_t face_previous_idx_ = 2;
     uint32_t face_canvas_width_ = 0;
     uint32_t face_canvas_height_ = 0;
+    uint32_t face_pending_write_idx_ = 0;
     bool face_canvas_active_ = false;
 
     void InitializeLcdThemes();
@@ -95,6 +96,8 @@ public:
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
     virtual void SetFaceImage(uint8_t* rgb565, uint32_t width, uint32_t height) override;
+    uint8_t* AcquireFaceDecodeBuffer(size_t min_bytes, size_t* out_size);
+    void PresentFaceDecodeBuffer(uint8_t* buf, uint32_t width, uint32_t height);
     bool ShowStaticIdleFace();
     void PlayGifFromFile(const char* filepath);
     void OpenAppGrid();

@@ -54,6 +54,9 @@ extern "C" {
  */
 esp_err_t jpeg_to_image(const uint8_t* src, size_t src_len, uint8_t** out, size_t* out_len, size_t* width,
                         size_t* height, size_t* stride);
+esp_err_t jpeg_to_image_into(const uint8_t* src, size_t src_len, uint8_t* out_buf, size_t out_buf_size,
+                             size_t* out_len, size_t* width, size_t* height, size_t* stride);
+void jpeg_decoder_warmup(void);
 
 #ifdef __cplusplus
 }

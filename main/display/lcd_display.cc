@@ -2717,51 +2717,52 @@ void LcdDisplay::SetupUI() {
 #endif
 }
 
-void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) {
-    static uint32_t s_face_count = 0;
-    s_face_count++;
-    if ((s_face_count & 0x3F) == 1) {
-        ESP_LOGI(TAG, "SetFaceImage: %ux%u count=%u", width, height, s_face_count);
-    }
-    if (!setup_ui_called_ || rgb565 == nullptr || width == 0 || height == 0) {
-        return;
+uint8_t* LcdDisplay::AcquireFaceDecodeBuffer(size_t min_bytes, size_t* out_size) {
+    if (!setup_ui_called_ || out_size == nullptr) {
+        return nullptr;
     }
 
-    // If LVGL is busy, drop the frame before copying 480x800x2 bytes through PSRAM.
-    if (!Lock(0)) {
-        return;
+    if (!Lock(30)) {
+        return nullptr;
     }
 
-    // Allocate ping-pong buffers if needed.
-    uint32_t stride = width * 2;  // no alignment padding needed for PSRAM
-    size_t needed_size = stride * height;
+    uint32_t width = face_canvas_width_ > 0 ? face_canvas_width_ : 480;
+    uint32_t height = face_canvas_height_ > 0 ? face_canvas_height_ : 800;
+    size_t needed_size = (size_t)width * height * 2;
+    if (needed_size < min_bytes) {
+        needed_size = min_bytes;
+    }
 
     bool need_realloc = (face_bufs_[0] == nullptr || face_bufs_[1] == nullptr || face_bufs_[2] == nullptr ||
-                         face_canvas_width_ != width || face_canvas_height_ != height);
+                         needed_size > (size_t)face_canvas_width_ * face_canvas_height_ * 2);
     if (need_realloc) {
         for (int i = 0; i < 3; i++) {
-            if (face_bufs_[i]) { heap_caps_free(face_bufs_[i]); face_bufs_[i] = nullptr; }
-        }
-        face_bufs_[0] = (uint8_t *)heap_caps_malloc(needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        face_bufs_[1] = (uint8_t *)heap_caps_malloc(needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        face_bufs_[2] = (uint8_t *)heap_caps_malloc(needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!face_bufs_[0] || !face_bufs_[1] || !face_bufs_[2]) {
-            ESP_LOGE(TAG, "Failed to alloc face frame buffers");
-            for (int i = 0; i < 3; i++) {
-                if (face_bufs_[i]) { heap_caps_free(face_bufs_[i]); face_bufs_[i] = nullptr; }
+            if (face_bufs_[i]) {
+                heap_caps_free(face_bufs_[i]);
+                face_bufs_[i] = nullptr;
             }
-            Unlock();
-            return;
         }
-        face_canvas_width_ = width;
-        face_canvas_height_ = height;
+        for (int i = 0; i < 3; i++) {
+            face_bufs_[i] = (uint8_t*)heap_caps_malloc(needed_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!face_bufs_[i]) {
+                for (int j = 0; j <= i; j++) {
+                    if (face_bufs_[j]) {
+                        heap_caps_free(face_bufs_[j]);
+                        face_bufs_[j] = nullptr;
+                    }
+                }
+                Unlock();
+                return nullptr;
+            }
+        }
+        if (face_canvas_width_ == 0 || face_canvas_height_ == 0) {
+            face_canvas_width_ = width;
+            face_canvas_height_ = height;
+        }
         face_display_idx_ = 0;
         face_previous_idx_ = 2;
     }
 
-    // Copy into a buffer that is neither the current canvas source nor the one
-    // most recently handed to LVGL. This gives the LCD flush path one extra
-    // frame of breathing room and prevents horizontal/striped corruption.
     uint32_t write_idx = 0;
     for (uint32_t i = 0; i < 3; i++) {
         if (i != face_display_idx_ && i != face_previous_idx_) {
@@ -2769,7 +2770,32 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
             break;
         }
     }
-    memcpy(face_bufs_[write_idx], rgb565, width * height * 2);
+
+    *out_size = needed_size;
+    uint8_t* buffer = face_bufs_[write_idx];
+    face_pending_write_idx_ = write_idx;
+    Unlock();
+    return buffer;
+}
+
+void LcdDisplay::PresentFaceDecodeBuffer(uint8_t* buf, uint32_t width, uint32_t height) {
+    if (!setup_ui_called_ || buf == nullptr || width == 0 || height == 0) {
+        return;
+    }
+
+    if (!Lock(30)) {
+        return;
+    }
+
+    uint32_t write_idx = face_pending_write_idx_;
+    if (buf != face_bufs_[write_idx]) {
+        for (uint32_t i = 0; i < 3; i++) {
+            if (face_bufs_[i] == buf) {
+                write_idx = i;
+                break;
+            }
+        }
+    }
 
     if (!face_canvas_active_ && face_canvas_ != nullptr) {
         face_canvas_active_ = true;
@@ -2783,11 +2809,10 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
         BringTouchAppLauncherToFront();
     }
 
+    face_canvas_width_ = width;
+    face_canvas_height_ = height;
+
     if (face_canvas_ && face_bufs_[write_idx]) {
-        if (need_realloc) {
-            // First time or size changed: set initial buffer
-            lv_canvas_set_buffer(face_canvas_, face_bufs_[0], width, height, LV_COLOR_FORMAT_RGB565);
-        }
         lv_canvas_set_buffer(face_canvas_, face_bufs_[write_idx], width, height, LV_COLOR_FORMAT_RGB565);
         lv_obj_invalidate(face_canvas_);
         face_previous_idx_ = face_display_idx_;
@@ -2795,6 +2820,20 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
     }
 
     Unlock();
+}
+
+void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) {
+    if (!setup_ui_called_ || rgb565 == nullptr || width == 0 || height == 0) {
+        return;
+    }
+
+    size_t out_size = 0;
+    uint8_t* target = AcquireFaceDecodeBuffer(width * height * 2, &out_size);
+    if (target == nullptr) {
+        return;
+    }
+    memcpy(target, rgb565, width * height * 2);
+    PresentFaceDecodeBuffer(target, width, height);
 }
 
 bool LcdDisplay::ShowStaticIdleFace() {

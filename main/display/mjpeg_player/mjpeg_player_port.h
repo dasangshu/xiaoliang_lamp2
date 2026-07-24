@@ -13,7 +13,7 @@ typedef struct {
     int core_id;
     bool use_psram;
     int task_priority;
-    uint32_t target_fps;  /*!< Target playback FPS (0 = use default 15fps) */
+    uint32_t target_fps;  /*!< Target playback FPS (0 = use default 30fps) */
 } mjpeg_player_port_config_t;
 
 esp_err_t mjpeg_player_port_init(mjpeg_player_port_config_t *config);

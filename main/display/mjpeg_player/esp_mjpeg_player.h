@@ -17,9 +17,13 @@ typedef struct {
     size_t frame_buffer_size;     /*!< Frame buffer size for JPEG data */
     size_t cache_buffer_size;     /*!< File read cache size */
     bool cache_in_psram;         /*!< Use PSRAM for cache */
+    bool preload_to_psram;       /*!< Preload entire file to PSRAM before playback */
     int task_priority;           /*!< Task priority */
     int task_core;              /*!< CPU core ID */
-    uint32_t target_fps;        /*!< Target playback FPS (0 = unlimited, recommended: 15-20) */
+    uint32_t target_fps;        /*!< Target playback FPS (0 = unlimited, recommended: 24-30) */
+    uint8_t *(*acquire_rgb_buffer)(size_t min_bytes, size_t *out_size, void *ctx);
+    void (*present_rgb_buffer)(uint8_t *buf, uint32_t width, uint32_t height, void *ctx);
+    void *buffer_ctx;
     void (*on_frame_cb)(uint8_t *rgb565, uint32_t width, uint32_t height, void *ctx); /*!< Frame callback */
     void *user_data;            /*!< User data passed to callback */
 } mjpeg_player_config_t;
