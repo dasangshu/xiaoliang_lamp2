@@ -299,8 +299,8 @@ void AudioService::AudioInputTask() {
                 if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
                     wake_word_->Feed(data);
                     auto now = xTaskGetTickCount();
-                    if ((now - last_wake_feed_log_tick) * portTICK_PERIOD_MS > 5000) {
-                        ESP_LOGI(TAG, "Wake word feed active, input_count=%lu (+%lu/5s), samples=%d, channels=%d",
+                    if ((now - last_wake_feed_log_tick) * portTICK_PERIOD_MS > 60000) {
+                        ESP_LOGD(TAG, "Wake word feed active, input_count=%lu (+%lu/60s), samples=%d, channels=%d",
                                  (unsigned long)debug_statistics_.input_count,
                                  (unsigned long)(debug_statistics_.input_count - last_wake_input_count),
                                  samples, codec_->input_channels());

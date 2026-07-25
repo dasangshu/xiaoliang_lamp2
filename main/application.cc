@@ -113,7 +113,7 @@ void Application::Initialize() {
     auto& board = Board::GetInstance();
     SetDeviceState(kDeviceStateStarting);
 
-    // Initialize MJPEG player for face animation playback
+    // Initialize MJPEG player for face animation playback.
     mjpeg_player_port_config_t mjpeg_config = {
         .buffer_size = 300 * 1024,  // enough for larger 480x800 MJPEG JPEG frames
         .core_id = -1,     // let the scheduler place MJPEG; do not pin heavy JPEG decode to CPU0

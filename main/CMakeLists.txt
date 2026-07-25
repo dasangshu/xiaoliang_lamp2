@@ -15,6 +15,7 @@ set(SOURCES "audio/audio_codec.cc"
             "led/gpio_led.cc"
             "display/display.cc"
             "display/lcd_display.cc"
+            "display/apps/app_registry.cc"
             "display/oled_display.cc"
             "display/lvgl_display/lvgl_display.cc"
             "display/emote_display.cc"
@@ -487,7 +488,9 @@ elseif(CONFIG_BOARD_TYPE_XIAOLIANG)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
 elseif(CONFIG_BOARD_TYPE_XIAOLIANG_TOUCH)
     set(BOARD_TYPE "xiaoliang_touch")
-    set(BUILTIN_TEXT_FONT font_puhui_basic_30_4)
+    # 20px keeps the 480x800 product UI readable without returning to the
+    # oversized 30px typography that caused excessive wrapping.
+    set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_30_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
 elseif(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_LCD)
@@ -1051,6 +1054,10 @@ function(build_default_assets_bin)
     if(DEFAULT_ASSETS_EXTRA_FILES)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
     endif()
+
+    # Product UI illustrations are packaged alongside the normal emoji
+    # collection so LVGL can decode them directly from the assets partition.
+    list(APPEND BUILD_ARGS "--app_ui_assets" "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_ui")
     
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
     list(APPEND BUILD_ARGS "--xiaozhi_fonts_path" "${XIAOZHI_FONTS_PATH}")

@@ -180,7 +180,7 @@ private:
 
         display_ = new MipiLcdDisplay(io, disp_panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                      false, false, false);
+                                      DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     bool ProbeTouchI2c(uint8_t addr) {
@@ -568,12 +568,13 @@ private:
             ESP_LOGW(TAG, "Touch wake GPIO config failed: %s", esp_err_to_name(err));
             return;
         }
-        err = gpio_install_isr_service(0);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "GPIO ISR service install failed: %s", esp_err_to_name(err));
-            return;
-        }
         err = gpio_isr_handler_add(TOUCH_WAKE_GPIO, TouchWakeIsr, nullptr);
+        if (err == ESP_ERR_INVALID_STATE) {
+            err = gpio_install_isr_service(0);
+            if (err == ESP_OK) {
+                err = gpio_isr_handler_add(TOUCH_WAKE_GPIO, TouchWakeIsr, nullptr);
+            }
+        }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Touch wake ISR add failed: %s", esp_err_to_name(err));
             return;
@@ -740,10 +741,16 @@ public:
         InitializeCodecI2c();
         InitializeCameraI2c();
         InitializeLCD();
-        if (!InitializeTouch()) {
+        const bool coordinate_touch_ready = InitializeTouch();
+        if (!coordinate_touch_ready) {
             xTaskCreate(TouchRetryTask, "touch_retry", 4096, this, 5, nullptr);
+            // CT8233 is only a fallback when no coordinate touch controller is
+            // available. Registering this extra GPIO interrupt alongside the
+            // Hosted Wi-Fi interrupt service can trigger an interrupt storm.
+            InitializeTouchWake();
+        } else {
+            ESP_LOGI(TAG, "Coordinate touch ready; CT8233 GPIO wake disabled");
         }
-        InitializeTouchWake();
         InitializeLampUart();
         InitializeLampTools();
         // InitializeSdCard();

@@ -29,6 +29,7 @@ protected:
     lv_obj_t* app_menu_button_ = nullptr;
     lv_obj_t* app_grid_layer_ = nullptr;
     lv_obj_t* app_detail_layer_ = nullptr;
+    lv_timer_t* pomodoro_timer_ = nullptr;
     lv_obj_t* preview_image_ = nullptr;
     lv_obj_t* emoji_label_ = nullptr;
     lv_obj_t* emoji_image_ = nullptr;
@@ -53,12 +54,15 @@ protected:
     void InitializeLcdThemes();
     void CreateTouchAppLauncher(lv_obj_t* screen);
     void BringTouchAppLauncherToFront();
+    void StopPomodoroTimer();
     lv_obj_t* CreateAppHeader(lv_obj_t* parent, const char* title, const char* subtitle,
                               lv_color_t back_bg_color, lv_color_t text_color, lv_color_t subtext_color);
     void ShowAppGrid();
+    void ShowLegacyAppGrid();
     void HideAppGrid();
     void ShowAppDetail(const char* title, const char* subtitle, const char* const* actions, size_t action_count);
     void ShowTaskScheduler();
+    void ShowPomodoroTimer();
     void ShowPetGarden();
     void ShowFeatureDashboard(const char* title, const char* subtitle, uint32_t hero_color,
                               const char* hero_title, const char* hero_body,
@@ -67,8 +71,12 @@ protected:
                               const char* const* icons, size_t action_count,
                               const char* resource_note);
     void ShowEyeIsland();
+    void ShowEyeTraining();
     void ShowMusicBox();
+    void ShowNatureSound(const char* title, const char* path);
     void ShowAiSpeaking();
+    void ShowAiChat(const char* scenario);
+    void ShowTaskStats();
     void ShowHealthHub();
     void ShowExpressionAlbum();
     void ShowDeviceSettings();
@@ -82,6 +90,9 @@ protected:
     static void OnMusicSceneClicked(lv_event_t* event);
     static void OnAiScenarioClicked(lv_event_t* event);
     static void OnTaskQuickTimerClicked(lv_event_t* event);
+    static void OnPomodoroStartClicked(lv_event_t* event);
+    static void OnPomodoroResetClicked(lv_event_t* event);
+    static void OnPomodoroModeClicked(lv_event_t* event);
     static void OnPetSkinClicked(lv_event_t* event);
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;

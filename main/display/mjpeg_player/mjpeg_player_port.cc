@@ -304,7 +304,10 @@ esp_err_t mjpeg_player_port_init(mjpeg_player_port_config_t *config) {
         .frame_buffer_size = config->buffer_size ? config->buffer_size : 150 * 1024,
         .cache_buffer_size = config->buffer_size ? config->buffer_size : 128 * 1024,
         .cache_in_psram = config->use_psram,
-        .preload_to_psram = config->use_psram,
+        // Keep the decode/cache buffers in PSRAM, but stream media from storage.
+        // Preloading a multi-megabyte MJPEG in one startup burst can starve the
+        // Hosted Wi-Fi GPIO interrupt path on ESP32-P4 and trip the interrupt WDT.
+        .preload_to_psram = false,
         .task_priority = config->task_priority,
         .task_core = config->core_id,
         .target_fps = config->target_fps > 0 ? config->target_fps : 30,
