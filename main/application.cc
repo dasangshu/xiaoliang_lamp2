@@ -1084,8 +1084,24 @@ void Application::FinishIdleEmotionPreroll(uint32_t session_id) {
         return;
     }
 
+    // JPEG decoding and WakeNet's P4-optimized kernels must not run together.
+    // Stop the MJPEG worker completely and retain its last frame before the
+    // audio inference path is enabled. Merely clearing the activity flag left
+    // the decoder running in the background and could crash WakeNet.
+    auto display = Board::GetInstance().GetDisplay();
+    bool stopped = false;
+    if (auto* lcd_display = dynamic_cast<LcdDisplay*>(display)) {
+        stopped = lcd_display->ShowStaticIdleFace();
+    } else {
+        stopped = mjpeg_player_port_stop_wait(2000) == ESP_OK;
+    }
+    if (!stopped) {
+        ESP_LOGE(TAG, "Idle MJPEG did not stop; wake word remains disabled for safety");
+        return;
+    }
+
     idle_mjpeg_active_ = false;
-    ESP_LOGI(TAG, "Idle MJPEG preroll finished, enabling wake word");
+    ESP_LOGI(TAG, "Idle MJPEG stopped; enabling wake word");
     audio_service_.EnableWakeWordDetection(true);
 }
 

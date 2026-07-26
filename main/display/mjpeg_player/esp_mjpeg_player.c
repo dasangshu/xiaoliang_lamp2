@@ -363,15 +363,20 @@ esp_err_t mjpeg_player_play_file(mjpeg_player_handle_t handle, const char *filep
 
     BaseType_t ret;
     if (player->task_core >= 0 && player->task_core < portNUM_PROCESSORS) {
-        ret = xTaskCreatePinnedToCore(mjpeg_player_task, "mjpeg_player",
-            16 * 1024, player, player->task_priority, &player->task_handle, player->task_core);
+        ret = xTaskCreatePinnedToCoreWithCaps(mjpeg_player_task, "mjpeg_player",
+            16 * 1024, player, player->task_priority, &player->task_handle,
+            player->task_core, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     } else {
-        ret = xTaskCreate(mjpeg_player_task, "mjpeg_player",
-            16 * 1024, player, player->task_priority, &player->task_handle);
+        ret = xTaskCreateWithCaps(mjpeg_player_task, "mjpeg_player",
+            16 * 1024, player, player->task_priority, &player->task_handle,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
 
     if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create player task");
+        ESP_LOGE(TAG, "Failed to create player task (internal_free=%u largest=%u psram_free=%u)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         player->is_playing = false;
         media_src_storage_disconnect(&player->file);
         return ESP_FAIL;

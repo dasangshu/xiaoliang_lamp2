@@ -27,6 +27,7 @@ protected:
     lv_obj_t* side_bar_ = nullptr;
     lv_obj_t* bottom_bar_ = nullptr;
     lv_obj_t* app_menu_button_ = nullptr;
+    bool app_launcher_ready_ = false;
     lv_obj_t* app_grid_layer_ = nullptr;
     lv_obj_t* app_detail_layer_ = nullptr;
     lv_timer_t* pomodoro_timer_ = nullptr;
@@ -64,6 +65,7 @@ protected:
     void ShowTaskScheduler();
     void ShowPomodoroTimer();
     void ShowPetGarden();
+    void ShowPetSkins();
     void ShowFeatureDashboard(const char* title, const char* subtitle, uint32_t hero_color,
                               const char* hero_title, const char* hero_body,
                               const char* const* metrics, size_t metric_count,
@@ -78,7 +80,6 @@ protected:
     void ShowAiChat(const char* scenario);
     void ShowTaskStats();
     void ShowHealthHub();
-    void ShowExpressionAlbum();
     void ShowDeviceSettings();
     void ShowMoreApps();
     void ShowActionDetail(const char* action_name);
@@ -89,11 +90,16 @@ protected:
     static void OnAppActionClicked(lv_event_t* event);
     static void OnMusicSceneClicked(lv_event_t* event);
     static void OnAiScenarioClicked(lv_event_t* event);
-    static void OnTaskQuickTimerClicked(lv_event_t* event);
+    static void OnDeviceWifiClicked(lv_event_t* event);
+    static void OnDeviceVolumeChanged(lv_event_t* event);
+    static void OnDeviceBrightnessChanged(lv_event_t* event);
+    static void OnCareModeChanged(lv_event_t* event);
     static void OnPomodoroStartClicked(lv_event_t* event);
     static void OnPomodoroResetClicked(lv_event_t* event);
     static void OnPomodoroModeClicked(lv_event_t* event);
     static void OnPetSkinClicked(lv_event_t* event);
+    static void OnPetSkinsOpenClicked(lv_event_t* event);
+    static void OnPetSkinsBackClicked(lv_event_t* event);
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 

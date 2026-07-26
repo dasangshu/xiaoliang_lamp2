@@ -13,7 +13,6 @@ enum class AppKind {
     kMusic,
     kAiSpeaking,
     kHealth,
-    kAlbum,
     kDevice,
     kMore,
 };
@@ -40,7 +39,6 @@ extern const char* const kPetActions[3];
 extern const char* const kMusicActions[3];
 extern const char* const kAiSpeakActions[3];
 extern const char* const kHealthActions[3];
-extern const char* const kAlbumActions[3];
 extern const char* const kDeviceActions[3];
 extern const char* const kMoreActions[3];
 

@@ -339,11 +339,12 @@ esp_err_t mjpeg_player_port_init(mjpeg_player_port_config_t *config) {
         return ESP_ERR_NO_MEM;
     }
 
-    BaseType_t task_ret = xTaskCreatePinnedToCore(
+    BaseType_t task_ret = xTaskCreatePinnedToCoreWithCaps(
         player_manager_task, "mjpeg_mgr",
         16 * 1024, NULL,
         config->task_priority, &s_player.manager_task,
-        config->core_id >= 0 ? config->core_id : 1);
+        config->core_id >= 0 ? config->core_id : 1,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     if (task_ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create manager task");

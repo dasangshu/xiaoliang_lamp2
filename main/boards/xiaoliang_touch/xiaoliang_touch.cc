@@ -46,6 +46,7 @@ private:
     Button boot_button_;
     LcdDisplay* display_ = nullptr;
     EspVideo* camera_ = nullptr;
+    SemaphoreHandle_t camera_mutex_ = nullptr;
     bool touch_initialized_ = false;
 
     static esp_err_t EnableDsiPhyPower() {
@@ -132,8 +133,16 @@ private:
 
         esp_lcd_dpi_panel_config_t dpi_config = {
             .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-            .dpi_clock_freq_mhz = 20,
+            // 20 MHz with the configured porches is only about 44 Hz and is
+            // visibly flickery on bright, mostly-white application pages.
+            // 30 MHz yields about 66 Hz and remains within the two-lane
+            // 500 Mbps MIPI-DSI bandwidth.
+            .dpi_clock_freq_mhz = 30,
             .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
+            // esp_lvgl_port's MIPI avoid-tearing path needs three buffers:
+            // one scanned, one queued and one available to LVGL. With only
+            // two, the LVGL task can wait indefinitely and stop dispatching
+            // touch events.
             .num_fbs = 3,
             .video_timing = {
                 .h_size = 480,
@@ -146,7 +155,10 @@ private:
                 .vsync_front_porch = 10,
             },
             .flags = {
-                .use_dma2d = true,
+                // LVGL renders directly into the DPI frame buffers. Enabling
+                // DMA2D here creates a competing GDMA path; the crash logs
+                // showed the interrupt watchdog inside gdma_link_mount_buffers.
+                .use_dma2d = false,
             },
         };
 
@@ -180,7 +192,7 @@ private:
 
         display_ = new MipiLcdDisplay(io, disp_panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                      DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+                                      false, false, false);
     }
 
     bool ProbeTouchI2c(uint8_t addr) {
@@ -738,6 +750,7 @@ private:
 
 public:
     XiaoliangTouchBoard() : boot_button_(BOOT_BUTTON_GPIO) {
+        camera_mutex_ = xSemaphoreCreateMutex();
         InitializeCodecI2c();
         InitializeCameraI2c();
         InitializeLCD();
@@ -754,7 +767,6 @@ public:
         InitializeLampUart();
         InitializeLampTools();
         // InitializeSdCard();
-        InitializeCamera();
         InitializeButtons();
         GetBacklight()->RestoreBrightness();
     }
@@ -785,7 +797,20 @@ public:
         return &backlight;
     }
 
+    virtual bool HasCamera() override {
+        return true;
+    }
+
     virtual Camera* GetCamera() override {
+        if (camera_ == nullptr && camera_mutex_ != nullptr) {
+            if (xSemaphoreTake(camera_mutex_, pdMS_TO_TICKS(3000)) == pdTRUE) {
+                if (camera_ == nullptr) {
+                    ESP_LOGI(TAG, "Lazy initializing camera");
+                    InitializeCamera();
+                }
+                xSemaphoreGive(camera_mutex_);
+            }
+        }
         return camera_;
     }
 

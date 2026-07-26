@@ -63,6 +63,10 @@ inline void StyleHeroTitle(lv_obj_t* label) {
 }
 
 inline void StyleCard(lv_obj_t* object, uint32_t background = kSurfaceElevated) {
+    // Cards are controls/content surfaces, never independent scroll areas.
+    // Scrolling is owned by the page's single explicit list container.
+    lv_obj_set_scrollbar_mode(object, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(object, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(object, lv_color_hex(background), 0);
     lv_obj_set_style_bg_opa(object, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(object, kCardRadius, 0);

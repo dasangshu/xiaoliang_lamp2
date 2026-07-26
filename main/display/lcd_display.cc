@@ -16,11 +16,13 @@
 #include <esp_psram.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <src/misc/cache/lv_cache.h>
 #include <time.h>
 
 #include "board.h"
+#include "boards/common/wifi_board.h"
 #include "application.h"
 #include "mjpeg_player/mjpeg_player_port.h"
 
@@ -158,6 +160,198 @@ lv_obj_t* g_pomodoro_done_label = nullptr;
 lv_obj_t* g_pomodoro_minutes_label = nullptr;
 lv_obj_t* g_pomodoro_arc = nullptr;
 lv_obj_t* g_pomodoro_mode_buttons[3] = {nullptr, nullptr, nullptr};
+int g_eye_height_cm = 170;
+lv_obj_t* g_eye_height_label = nullptr;
+lv_obj_t* g_eye_seat_label = nullptr;
+lv_obj_t* g_eye_desk_label = nullptr;
+lv_obj_t* g_eye_height_input_layer = nullptr;
+lv_obj_t* g_eye_height_textarea = nullptr;
+uint8_t g_pet_daily_mask = 0;
+int g_pet_growth = 0;
+int g_pet_streak = 0;
+lv_obj_t* g_pet_progress_label = nullptr;
+lv_obj_t* g_pet_growth_label = nullptr;
+lv_obj_t* g_pet_habit_cards[3] = {nullptr, nullptr, nullptr};
+lv_obj_t* g_pet_habit_states[3] = {nullptr, nullptr, nullptr};
+
+void UpdateEyeErgonomicsUi() {
+    char text[32];
+    if (g_eye_height_label != nullptr) {
+        snprintf(text, sizeof(text), "%d cm", g_eye_height_cm);
+        lv_label_set_text(g_eye_height_label, text);
+    }
+    if (g_eye_seat_label != nullptr) {
+        snprintf(text, sizeof(text), "座椅 %d cm", (g_eye_height_cm * 25 + 50) / 100);
+        lv_label_set_text(g_eye_seat_label, text);
+    }
+    if (g_eye_desk_label != nullptr) {
+        snprintf(text, sizeof(text), "桌面 %d cm", (g_eye_height_cm * 41 + 50) / 100);
+        lv_label_set_text(g_eye_desk_label, text);
+    }
+}
+
+void OnEyeHeightChanged(lv_event_t* event) {
+    const int delta = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+    g_eye_height_cm = std::clamp(g_eye_height_cm + delta, 100, 220);
+    Settings settings("eye_ui", true);
+    settings.SetInt("height_cm", g_eye_height_cm);
+    UpdateEyeErgonomicsUi();
+}
+
+void CloseEyeHeightInput() {
+    if (g_eye_height_input_layer != nullptr) {
+        lv_obj_del(g_eye_height_input_layer);
+        g_eye_height_input_layer = nullptr;
+        g_eye_height_textarea = nullptr;
+    }
+}
+
+void OnEyeHeightKeyClicked(lv_event_t* event) {
+    if (g_eye_height_textarea == nullptr) {
+        return;
+    }
+    const char* key = static_cast<const char*>(lv_event_get_user_data(event));
+    if (strcmp(key, "OK") == 0) {
+        const char* value = lv_textarea_get_text(g_eye_height_textarea);
+        const int entered_height = value != nullptr && value[0] != '\0' ? atoi(value) : g_eye_height_cm;
+        g_eye_height_cm = std::clamp(entered_height, 100, 220);
+        Settings settings("eye_ui", true);
+        settings.SetInt("height_cm", g_eye_height_cm);
+        CloseEyeHeightInput();
+        UpdateEyeErgonomicsUi();
+    } else if (strcmp(key, "DEL") == 0) {
+        lv_textarea_delete_char(g_eye_height_textarea);
+    } else if (strlen(lv_textarea_get_text(g_eye_height_textarea)) < 3) {
+        lv_textarea_add_text(g_eye_height_textarea, key);
+    }
+}
+
+void OnEyeHeightInputClicked(lv_event_t* event) {
+    (void)event;
+    if (g_eye_height_input_layer != nullptr) {
+        return;
+    }
+    g_eye_height_input_layer = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(g_eye_height_input_layer, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_pos(g_eye_height_input_layer, 0, 0);
+    lv_obj_set_style_radius(g_eye_height_input_layer, 0, 0);
+    lv_obj_set_style_bg_color(g_eye_height_input_layer, lv_color_hex(0x172033), 0);
+    lv_obj_set_style_bg_opa(g_eye_height_input_layer, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(g_eye_height_input_layer, 0, 0);
+    lv_obj_set_style_pad_all(g_eye_height_input_layer, 0, 0);
+    lv_obj_clear_flag(g_eye_height_input_layer, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* panel = lv_obj_create(g_eye_height_input_layer);
+    lv_obj_set_size(panel, 360, 150);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 90);
+    lv_obj_set_style_radius(panel, 22, 0);
+    lv_obj_set_style_bg_color(panel, lv_color_white(), 0);
+    lv_obj_set_style_border_width(panel, 0, 0);
+
+    lv_obj_t* title = lv_label_create(panel);
+    lv_label_set_text(title, "输入身高（厘米）");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+    g_eye_height_textarea = lv_textarea_create(panel);
+    lv_obj_set_size(g_eye_height_textarea, 250, 62);
+    lv_obj_align(g_eye_height_textarea, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_textarea_set_one_line(g_eye_height_textarea, true);
+    lv_textarea_set_max_length(g_eye_height_textarea, 3);
+    lv_textarea_set_accepted_chars(g_eye_height_textarea, "0123456789");
+    char height_text[8];
+    snprintf(height_text, sizeof(height_text), "%d", g_eye_height_cm);
+    lv_textarea_set_placeholder_text(g_eye_height_textarea, height_text);
+    lv_textarea_set_text(g_eye_height_textarea, "");
+    lv_obj_set_style_text_align(g_eye_height_textarea, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t* keypad = lv_obj_create(g_eye_height_input_layer);
+    lv_obj_set_size(keypad, LV_HOR_RES - 24, 330);
+    lv_obj_align(keypad, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_set_style_radius(keypad, 22, 0);
+    lv_obj_set_style_bg_color(keypad, lv_color_hex(0xF5F7F8), 0);
+    lv_obj_set_style_border_width(keypad, 0, 0);
+    lv_obj_set_style_pad_all(keypad, 10, 0);
+    lv_obj_clear_flag(keypad, LV_OBJ_FLAG_SCROLLABLE);
+
+    static const char* keys[] = {"1", "2", "3", "4", "5", "6",
+                                 "7", "8", "9", "DEL", "0", "OK"};
+    static const char* labels[] = {"1", "2", "3", "4", "5", "6",
+                                   "7", "8", "9", "删除", "0", "确认"};
+    constexpr int key_w = 136;
+    constexpr int key_h = 68;
+    constexpr int key_gap = 8;
+    for (int i = 0; i < 12; ++i) {
+        lv_obj_t* button = lv_obj_create(keypad);
+        lv_obj_set_size(button, key_w, key_h);
+        lv_obj_set_pos(button, (i % 3) * (key_w + key_gap), (i / 3) * (key_h + key_gap));
+        lv_obj_set_style_radius(button, 14, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(i == 11 ? 0x45BE72 : 0xFFFFFF), 0);
+        lv_obj_set_style_border_width(button, 1, 0);
+        lv_obj_set_style_border_color(button, lv_color_hex(0xE1E7E4), 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(button, OnEyeHeightKeyClicked, LV_EVENT_CLICKED,
+                            const_cast<char*>(keys[i]));
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, labels[i]);
+        lv_obj_set_style_text_color(label, lv_color_hex(i == 11 ? 0xFFFFFF : 0x27322F), 0);
+        lv_obj_center(label);
+    }
+    lv_obj_move_foreground(g_eye_height_input_layer);
+}
+
+void UpdatePetHabitUi() {
+    int completed = 0;
+    for (int i = 0; i < 3; ++i) {
+        const bool done = (g_pet_daily_mask & (1U << i)) != 0;
+        completed += done ? 1 : 0;
+        if (g_pet_habit_cards[i] != nullptr) {
+            lv_obj_set_style_bg_color(g_pet_habit_cards[i],
+                                      lv_color_hex(done ? 0xE8F7EC : 0xFFFFFF), 0);
+            lv_obj_set_style_border_color(g_pet_habit_cards[i],
+                                          lv_color_hex(done ? 0x70C98A : 0xE5DDD3), 0);
+        }
+        if (g_pet_habit_states[i] != nullptr) {
+            lv_label_set_text(g_pet_habit_states[i], done ? "已完成" : "去完成");
+            lv_obj_set_style_text_color(g_pet_habit_states[i],
+                                        lv_color_hex(done ? 0x2E9F62 : 0x9A7451), 0);
+        }
+    }
+    char text[48];
+    if (g_pet_progress_label != nullptr) {
+        snprintf(text, sizeof(text), "今日完成 %d / 3  ·  连续 %d 天", completed, g_pet_streak);
+        lv_label_set_text(g_pet_progress_label, text);
+    }
+    if (g_pet_growth_label != nullptr) {
+        snprintf(text, sizeof(text), "成长值 %d", g_pet_growth);
+        lv_label_set_text(g_pet_growth_label, text);
+    }
+}
+
+void OnPetHabitClicked(lv_event_t* event) {
+    const int index = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+    if (index < 0 || index >= 3 || (g_pet_daily_mask & (1U << index)) != 0) {
+        return;
+    }
+    g_pet_daily_mask |= (1U << index);
+    g_pet_growth += 10;
+    Settings settings("pet_habit", true);
+    settings.SetInt("daily_mask", g_pet_daily_mask);
+    settings.SetInt("growth", g_pet_growth);
+
+    if ((g_pet_daily_mask & 0x07) == 0x07) {
+        const int32_t today = static_cast<int32_t>(time(nullptr) / 86400);
+        const int32_t last_complete = settings.GetInt("last_done_day", -2);
+        if (last_complete != today) {
+            g_pet_streak = last_complete == today - 1 ? g_pet_streak + 1 : 1;
+            settings.SetInt("streak", g_pet_streak);
+            settings.SetInt("last_done_day", today);
+            g_pet_growth += 20;
+            settings.SetInt("growth", g_pet_growth);
+        }
+    }
+    UpdatePetHabitUi();
+}
 
 uint32_t PomodoroSecondsForMode(PomodoroMode mode) {
     switch (mode) {
@@ -434,12 +628,6 @@ bool BuildStyleMjpegPath(const char* filename, char* path, size_t path_size) {
 using XiaoliangAppModule = app_ui::AppModule;
 using AppKind = app_ui::AppKind;
 
-struct QuickTimerPreset {
-    int minutes;
-    const char* title;
-    const char* content;
-};
-
 struct PetSkinPreset {
     const char* style_id;
     const char* title;
@@ -454,18 +642,10 @@ const XiaoliangAppModule* FindModule(AppKind kind) {
     return app_ui::FindAppModule(kind);
 }
 
-using app_ui::kAlbumActions;
 using app_ui::kDeviceActions;
 using app_ui::kEyeIslandActions;
 using app_ui::kHealthActions;
 using app_ui::kMoreActions;
-
-const QuickTimerPreset kQuickTimerPresets[] = {
-    {15, "15分钟", "护眼休息"},
-    {30, "30分钟", "喝水活动"},
-    {45, "45分钟", "学习检查"},
-    {60, "60分钟", "远眺放松"},
-};
 
 const PetSkinPreset kPetSkinPresets[] = {
     {"jinglingshu", "精灵鼠", "当前 SD 卡皮肤", "/sdcard/style/jinglingshu"},
@@ -546,14 +726,6 @@ const char* const kHealthDescriptions[] = {
     "展示最近 7 天健康趋势，真实数据缺失时用演示数据。",
 };
 const char* const kHealthIcons[] = {FONT_AWESOME_HEART, FONT_AWESOME_BELL, FONT_AWESOME_CIRCLE_CHECK};
-
-const char* const kAlbumMetrics[] = {"状态 4个", "情绪 18个", "皮肤 1套"};
-const char* const kAlbumDescriptions[] = {
-    "展示 idle、listen、talk、loading 等系统动画。",
-    "按开心、思考、困惑、睡眠等情绪分类。",
-    "点击预览当前皮肤目录下的 MJPEG 文件。",
-};
-const char* const kAlbumIcons[] = {FONT_AWESOME_IMAGE, FONT_AWESOME_GAMEPAD, FONT_AWESOME_PLAY};
 
 const char* const kDeviceMetrics[] = {"亮度 80%", "音量 60%", "SD卡 检测"};
 const char* const kDeviceDescriptions[] = {
@@ -803,10 +975,10 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
         .io_handle = panel_io,
         .panel_handle = panel,
         .control_handle = nullptr,
-        // With tearing protection enabled, esp_lvgl_port replaces this with
-        // the MIPI-DPI driver's full frame buffers.
-        .buffer_size = static_cast<uint32_t>(width_ * height_),
-        .double_buffer = false,
+        // Two line buffers keep LVGL asynchronous without binding its task to
+        // the ST7701 driver's unreliable VSYNC semaphore path.
+        .buffer_size = static_cast<uint32_t>(width_ * 80),
+        .double_buffer = true,
         .hres = static_cast<uint32_t>(width_),
         .vres = static_cast<uint32_t>(height_),
         .monochrome = false,
@@ -819,23 +991,19 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
         .flags = {
             .buff_dma = true,
             .buff_spiram = false,
-            .sw_rotate = false,
+            .sw_rotate = true,
             .swap_bytes = false,
-            // Render a complete frame into the inactive buffer. Direct mode
-            // allows LVGL to modify regions of a buffer that can still be
-            // scanned by the panel, which is visible as heavy flicker on this
-            // ST7701 module.
-            .full_refresh = true,
+            .full_refresh = false,
             .direct_mode = false,
         },
     };
 
     const lvgl_port_display_dsi_cfg_t dpi_cfg = {
         .flags = {
-            // Draw into the DPI driver's frame buffers and hand them over on
-            // refresh completion. This avoids partial DMA updates racing the
-            // continuously scanned MIPI panel.
-            .avoid_tearing = true,
+            // The ST7701 MIPI implementation does not reliably signal the
+            // refresh semaphore used by esp_lvgl_port's avoid-tearing mode.
+            // When enabled, LVGL can block and stop dispatching touch events.
+            .avoid_tearing = false,
         }
     };
     display_ = lvgl_port_add_disp_dsi(&disp_cfg, &dpi_cfg);
@@ -976,10 +1144,11 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* back = lv_obj_create(header);
-    lv_obj_set_size(back, 42, 48);
-    lv_obj_set_pos(back, 0, 9);
-    lv_obj_set_style_radius(back, 0, 0);
-    lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(back, 56, 56);
+    lv_obj_set_pos(back, 0, 5);
+    lv_obj_set_style_radius(back, 18, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(0xF4F7F6), 0);
+    lv_obj_set_style_bg_opa(back, LV_OPA_80, 0);
     lv_obj_set_style_border_width(back, 0, 0);
     lv_obj_set_style_pad_all(back, 0, 0);
     lv_obj_set_style_shadow_width(back, 0, 0);
@@ -989,12 +1158,15 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
     lv_obj_t* back_label = lv_label_create(back);
     lv_label_set_text(back_label, FONT_AWESOME_ANGLE_LEFT);
     lv_obj_set_style_text_font(back_label, icon_font, 0);
+    lv_obj_set_style_transform_scale(back_label, 310, 0);
     lv_obj_set_style_text_color(back_label, text_color, 0);
     lv_obj_center(back_label);
 
     lv_obj_t* title_box = lv_obj_create(header);
-    lv_obj_set_size(title_box, LV_HOR_RES - 144, 60);
-    lv_obj_set_pos(title_box, 56, 3);
+    // Use the complete header width so the title is centered against the
+    // physical screen, independent of the back button and right-side content.
+    lv_obj_set_size(title_box, LV_HOR_RES - kPagePad * 2, 60);
+    lv_obj_set_pos(title_box, 0, 3);
     lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(title_box, 0, 0);
     lv_obj_set_style_pad_left(title_box, 0, 0);
@@ -1007,7 +1179,7 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
     lv_obj_t* title_label = lv_label_create(title_box);
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(title_label, LV_HOR_RES - 144);
+    lv_obj_set_width(title_label, LV_HOR_RES - kPagePad * 2 - 120);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(title_label, text_font, 0);
     app_ui::StylePageTitle(title_label);
@@ -1017,18 +1189,19 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
         lv_obj_t* subtitle_label = lv_label_create(title_box);
         lv_label_set_text(subtitle_label, subtitle);
         lv_label_set_long_mode(subtitle_label, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(subtitle_label, LV_HOR_RES - 144);
+        lv_obj_set_width(subtitle_label, LV_HOR_RES - kPagePad * 2 - 120);
         lv_obj_set_style_text_align(subtitle_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(subtitle_label, subtext_color, 0);
         lv_obj_set_style_margin_top(subtitle_label, 2, 0);
     }
 
     lv_obj_t* right_space = lv_obj_create(header);
-    lv_obj_set_size(right_space, 42, 48);
-    lv_obj_set_pos(right_space, LV_HOR_RES - kPagePad * 2 - 42, 9);
+    lv_obj_set_size(right_space, 56, 56);
+    lv_obj_set_pos(right_space, LV_HOR_RES - kPagePad * 2 - 56, 5);
     lv_obj_set_style_bg_opa(right_space, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(right_space, 0, 0);
     lv_obj_clear_flag(right_space, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_foreground(back);
 
     return header;
 }
@@ -1066,8 +1239,6 @@ void LcdDisplay::OnAppModuleClicked(lv_event_t* event) {
             display->ShowAiSpeaking();
         } else if (module->kind == XiaoliangAppModule::Kind::kHealth) {
             display->ShowHealthHub();
-        } else if (module->kind == XiaoliangAppModule::Kind::kAlbum) {
-            display->ShowExpressionAlbum();
         } else if (module->kind == XiaoliangAppModule::Kind::kDevice) {
             display->ShowDeviceSettings();
         } else if (module->kind == XiaoliangAppModule::Kind::kMore) {
@@ -1134,9 +1305,57 @@ void LcdDisplay::OnAiScenarioClicked(lv_event_t* event) {
         return;
     }
 
-    Application::GetInstance().StartAiScenario(scenario->title, scenario->command);
+    // Send the complete scene prompt. The short command is only a display/
+    // routing label and does not contain enough context to keep the dialogue
+    // in the scene selected by the user.
+    Application::GetInstance().StartAiScenario(scenario->title, scenario->prompt);
     if (display != nullptr) {
         display->ShowAiChat(scenario->title);
+    }
+}
+
+void LcdDisplay::OnDeviceWifiClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    auto* wifi_board = dynamic_cast<WifiBoard*>(&Board::GetInstance());
+    if (wifi_board == nullptr) {
+        if (display != nullptr) display->ShowNotification("当前设备不支持 Wi-Fi 配网", 2500);
+        return;
+    }
+    if (display != nullptr) display->ShowNotification("正在启动网络配网…", 1800);
+    wifi_board->EnterWifiConfigMode();
+}
+
+void LcdDisplay::OnDeviceVolumeChanged(lv_event_t* event) {
+    auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(event));
+    if (slider == nullptr) return;
+    const int value = lv_slider_get_value(slider);
+    auto* codec = Board::GetInstance().GetAudioCodec();
+    if (codec != nullptr) codec->SetOutputVolume(value);
+    auto* label = static_cast<lv_obj_t*>(lv_obj_get_user_data(slider));
+    if (label != nullptr) lv_label_set_text_fmt(label, "%d%%", value);
+}
+
+void LcdDisplay::OnDeviceBrightnessChanged(lv_event_t* event) {
+    auto* slider = static_cast<lv_obj_t*>(lv_event_get_target(event));
+    if (slider == nullptr) return;
+    const int value = lv_slider_get_value(slider);
+    auto* backlight = Board::GetInstance().GetBacklight();
+    if (backlight != nullptr) backlight->SetBrightness(value, true);
+    auto* label = static_cast<lv_obj_t*>(lv_obj_get_user_data(slider));
+    if (label != nullptr) lv_label_set_text_fmt(label, "%d%%", value);
+}
+
+void LcdDisplay::OnCareModeChanged(lv_event_t* event) {
+    auto* control = static_cast<lv_obj_t*>(lv_event_get_target(event));
+    if (control == nullptr) return;
+    const bool enabled = lv_obj_has_state(control, LV_STATE_CHECKED);
+    auto config = Application::GetInstance().GetEyeCareConfig();
+    config.enabled = enabled;
+    config.posture_enabled = enabled;
+    Application::GetInstance().ConfigureEyeCare(config);
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    if (display != nullptr) {
+        display->ShowNotification(enabled ? "关怀模式已开启" : "关怀模式已关闭", 1800);
     }
 }
 
@@ -1177,11 +1396,6 @@ void LcdDisplay::ShowActionDetail(const char* action_name) {
         row1 = "今日健康分：91";
         row2 = "快捷提醒：30 / 60 / 90 分钟";
         row3 = "异常：摄像头或模型缺失时提示";
-    } else if (strcmp(title, "表情管理") == 0 || strcmp(title, "照片预览") == 0 || strcmp(title, "动画素材") == 0) {
-        body = "表情相册只预览当前皮肤目录下的统一 MJPEG 文件。";
-        row1 = "目录：/sdcard/style/jinglingshu";
-        row2 = "状态：idle / listen / talk / loading";
-        row3 = "情绪：happy / sad / thinking / sleepy";
     } else if (strcmp(title, "亮度") == 0 || strcmp(title, "音量") == 0 || strcmp(title, "网络") == 0) {
         body = "设备设置提供触摸控制入口，后续接入具体硬件 setter。";
         row1 = "亮度：80%";
@@ -1276,26 +1490,6 @@ void LcdDisplay::ShowActionDetail(const char* action_name) {
     lv_obj_move_foreground(app_detail_layer_);
 }
 
-void LcdDisplay::OnTaskQuickTimerClicked(lv_event_t* event) {
-    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
-    auto* target = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
-    auto* preset = target != nullptr ? static_cast<const QuickTimerPreset*>(lv_obj_get_user_data(target)) : nullptr;
-    if (display == nullptr || preset == nullptr) {
-        return;
-    }
-
-    ReminderService::ReminderTask task;
-    const int64_t remind_at = time(nullptr) + preset->minutes * 60;
-    if (Application::GetInstance().AddReminderAt(remind_at, preset->content, task)) {
-        char message[96];
-        snprintf(message, sizeof(message), "已创建：%s后提醒%s", preset->title, preset->content);
-        display->ShowNotification(message, 2200);
-        display->ShowTaskScheduler();
-    } else {
-        display->ShowNotification("定时任务创建失败", 2200);
-    }
-}
-
 void LcdDisplay::OnPomodoroStartClicked(lv_event_t* event) {
     auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
     PomodoroApplyElapsed();
@@ -1352,8 +1546,17 @@ void LcdDisplay::OnPetSkinClicked(lv_event_t* event) {
     char message[96];
     snprintf(message, sizeof(message), "已切换皮肤：%s", skin->title);
     display->ShowNotification(message, 2200);
-    display->SetEmotion("idle.mjpeg");
     display->ShowPetGarden();
+}
+
+void LcdDisplay::OnPetSkinsOpenClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    if (display != nullptr) display->ShowPetSkins();
+}
+
+void LcdDisplay::OnPetSkinsBackClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    if (display != nullptr) display->ShowPetGarden();
 }
 
 void LcdDisplay::CreateTouchAppLauncher(lv_obj_t* screen) {
@@ -1362,42 +1565,31 @@ void LcdDisplay::CreateTouchAppLauncher(lv_obj_t* screen) {
     }
 
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
-    auto text_font = lvgl_theme->text_font()->font();
     auto icon_font = lvgl_theme->icon_font()->font();
 
     app_menu_button_ = lv_obj_create(screen);
-    lv_obj_set_size(app_menu_button_, 136, 52);
-    lv_obj_set_style_radius(app_menu_button_, 8, 0);
+    lv_obj_set_size(app_menu_button_, 50, 50);
+    lv_obj_set_style_radius(app_menu_button_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(app_menu_button_, lv_color_hex(0x1D6B5F), 0);
     lv_obj_set_style_bg_opa(app_menu_button_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_menu_button_, 0, 0);
     lv_obj_set_style_pad_all(app_menu_button_, 0, 0);
-    lv_obj_set_style_shadow_width(app_menu_button_, 0, 0);
+    lv_obj_set_style_shadow_width(app_menu_button_, 10, 0);
+    lv_obj_set_style_shadow_opa(app_menu_button_, LV_OPA_20, 0);
+    lv_obj_set_style_shadow_color(app_menu_button_, lv_color_hex(0x184E46), 0);
+    lv_obj_set_style_shadow_ofs_y(app_menu_button_, 3, 0);
     lv_obj_set_scrollbar_mode(app_menu_button_, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_add_flag(app_menu_button_, LV_OBJ_FLAG_CLICKABLE);
+    // The launcher is enabled only after the home content has finished
+    // loading. This prevents taps from reaching an incomplete page.
+    lv_obj_add_flag(app_menu_button_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(app_menu_button_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(app_menu_button_, OnAppLauncherClicked, LV_EVENT_CLICKED, this);
 
-    lv_obj_t* row = lv_obj_create(app_menu_button_);
-    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(row, OnAppLauncherClicked, LV_EVENT_CLICKED, this);
-    lv_obj_center(row);
-
-    lv_obj_t* icon = lv_label_create(row);
-    lv_label_set_text(icon, FONT_AWESOME_HOUSE);
+    lv_obj_t* icon = lv_label_create(app_menu_button_);
+    lv_label_set_text(icon, FONT_AWESOME_GAMEPAD);
     lv_obj_set_style_text_font(icon, icon_font, 0);
     lv_obj_set_style_text_color(icon, lv_color_white(), 0);
-
-    lv_obj_t* text = lv_label_create(row);
-    lv_label_set_text(text, "功能");
-    lv_obj_set_style_text_font(text, text_font, 0);
-    lv_obj_set_style_text_color(text, lv_color_white(), 0);
-    lv_obj_set_style_margin_left(text, 6, 0);
+    lv_obj_center(icon);
 
     BringTouchAppLauncherToFront();
 }
@@ -1407,7 +1599,24 @@ void LcdDisplay::BringTouchAppLauncherToFront() {
         return;
     }
 
-    lv_obj_align(app_menu_button_, LV_ALIGN_BOTTOM_MID, 0, -12);
+    const bool grid_visible = app_grid_layer_ != nullptr &&
+                              !lv_obj_has_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+    // Network setup must remain reachable even when the online home content
+    // cannot finish loading. In Wi-Fi configuration mode the local launcher
+    // is safe to expose because it does not depend on cloud resources.
+    const bool configuring_wifi =
+        Application::GetInstance().GetDeviceState() == kDeviceStateWifiConfiguring;
+    if ((!app_launcher_ready_ && !configuring_wifi) || grid_visible || app_detail_layer_ != nullptr) {
+        lv_obj_add_flag(app_menu_button_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(app_menu_button_, LV_OBJ_FLAG_CLICKABLE);
+        return;
+    }
+
+    lv_obj_remove_flag(app_menu_button_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(app_menu_button_, LV_OBJ_FLAG_CLICKABLE);
+    // Keep the launcher in the lower-right safe area so the home status text
+    // remains fully visible across different content states.
+    lv_obj_align(app_menu_button_, LV_ALIGN_BOTTOM_RIGHT, -14, -14);
     lv_obj_move_foreground(app_menu_button_);
 }
 
@@ -1428,6 +1637,7 @@ void LcdDisplay::ShowAppGrid() {
     }
 
     app_grid_layer_ = lv_obj_create(lv_screen_active());
+    BringTouchAppLauncherToFront();
     lv_obj_set_size(app_grid_layer_, 480, 800);
     lv_obj_set_pos(app_grid_layer_, 0, 0);
     lv_obj_set_style_radius(app_grid_layer_, 0, 0);
@@ -1471,7 +1681,6 @@ void LcdDisplay::ShowAppGrid() {
         {AppKind::kMusic, "音乐盒", "app_music", FONT_AWESOME_MUSIC, 0xF1ECFA},
         {AppKind::kAiSpeaking, "AI听说", "app_ai", FONT_AWESOME_COMMENT, 0xEAF3FC},
         {AppKind::kHealth, "健康中心", "app_health", FONT_AWESOME_HEART, 0xFCEBE6},
-        {AppKind::kAlbum, "表情相册", "app_album", FONT_AWESOME_IMAGE, 0xFFF5D9},
         {AppKind::kDevice, "设备设置", "app_device", FONT_AWESOME_GEAR, 0xEDF1F8},
     };
 
@@ -1481,13 +1690,23 @@ void LcdDisplay::ShowAppGrid() {
     constexpr int start_y = 112;
     constexpr int gap_x = 13;
     constexpr int gap_y = 18;
+    constexpr int image_slot_h = 100;
+    // Source illustrations use a 160x160 canvas. Scale 148/256 limits their
+    // largest visible dimension to about 84px while preserving aspect ratio.
+    constexpr int image_scale = 148;
     auto collection = theme->emoji_collection();
-    for (int i = 0; i < 9; ++i) {
+    constexpr size_t entry_count = sizeof(entries) / sizeof(entries[0]);
+    for (size_t i = 0; i < entry_count; ++i) {
         const int col = i % 3;
         const int row = i / 3;
+        const int remaining = static_cast<int>(entry_count) - row * 3;
+        const int row_count = remaining < 3 ? remaining : 3;
+        const int row_start_x = row_count < 3
+            ? (LV_HOR_RES - (row_count * card_w + (row_count - 1) * gap_x)) / 2
+            : start_x;
         lv_obj_t* card = lv_obj_create(app_grid_layer_);
         lv_obj_set_size(card, card_w, card_h);
-        lv_obj_set_pos(card, start_x + col * (card_w + gap_x),
+        lv_obj_set_pos(card, row_start_x + col * (card_w + gap_x),
                        start_y + row * (card_h + gap_y));
         lv_obj_set_style_radius(card, 18, 0);
         lv_obj_set_style_bg_color(card, lv_color_hex(entries[i].tint), 0);
@@ -1505,30 +1724,35 @@ void LcdDisplay::ShowAppGrid() {
         const LvglImage* image = collection ? collection->GetEmojiImage(entries[i].asset) : nullptr;
         if (image != nullptr) {
             lv_obj_t* image_slot = lv_obj_create(card);
-            lv_obj_set_size(image_slot, card_w, 105);
-            lv_obj_set_pos(image_slot, 0, 0);
+            lv_obj_set_size(image_slot, card_w, image_slot_h);
+            lv_obj_set_pos(image_slot, 0, 4);
             lv_obj_set_style_bg_opa(image_slot, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(image_slot, 0, 0);
             lv_obj_set_style_pad_all(image_slot, 0, 0);
             lv_obj_clear_flag(image_slot, LV_OBJ_FLAG_SCROLLABLE);
+            // Decorative children must not consume pointer events. The whole
+            // card is the single, generous touch target.
+            lv_obj_clear_flag(image_slot, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_t* icon = lv_image_create(image_slot);
             lv_image_set_src(icon, image->image_dsc());
-            lv_image_set_scale(icon, 148);
+            lv_image_set_scale(icon, image_scale);
+            lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_center(icon);
-            lv_obj_set_y(icon, -27);
         } else {
             lv_obj_t* icon = lv_label_create(card);
             lv_label_set_text(icon, entries[i].fallback);
             lv_obj_set_style_text_font(icon, icon_font, 0);
             lv_obj_set_style_transform_scale(icon, 260, 0);
             lv_obj_set_style_text_color(icon, lv_color_hex(0x52706C), 0);
-            lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 24);
+            lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 34);
         }
 
         lv_obj_t* label = lv_label_create(card);
         lv_label_set_text(label, entries[i].title);
         lv_obj_set_style_text_font(label, text_font, 0);
         lv_obj_set_style_text_color(label, lv_color_hex(0x26302E), 0);
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
 
@@ -1632,7 +1856,7 @@ void LcdDisplay::ShowLegacyAppGrid() {
     const AppKind grid_order[] = {
         AppKind::kPomodoro, AppKind::kTask, AppKind::kEyeIsland,
         AppKind::kPet, AppKind::kMusic, AppKind::kAiSpeaking,
-        AppKind::kHealth, AppKind::kAlbum, AppKind::kDevice,
+        AppKind::kHealth, AppKind::kDevice,
     };
     const lv_coord_t tile_width = (LV_HOR_RES - kPagePad * 2 - 24) / 3;
     const lv_coord_t tile_height = 160;
@@ -1664,12 +1888,14 @@ void LcdDisplay::ShowLegacyAppGrid() {
             lv_obj_t* image = lv_image_create(tile);
             lv_image_set_src(image, asset->image_dsc());
             lv_image_set_scale(image, 140);
+            lv_obj_clear_flag(image, LV_OBJ_FLAG_CLICKABLE);
         } else {
             lv_obj_t* icon = lv_label_create(tile);
             lv_label_set_text(icon, module.icon);
             lv_obj_set_style_text_font(icon, icon_font, 0);
             lv_obj_set_style_transform_scale(icon, 260, 0);
             lv_obj_set_style_text_color(icon, lv_color_hex(module.accent), 0);
+            lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
         }
 
         lv_obj_t* module_title = lv_label_create(tile);
@@ -1679,6 +1905,7 @@ void LcdDisplay::ShowLegacyAppGrid() {
         app_ui::StyleCardTitle(module_title);
         lv_obj_set_style_text_color(module_title, lv_color_hex(kTextPrimary), 0);
         lv_obj_set_style_margin_top(module_title, -8, 0);
+        lv_obj_clear_flag(module_title, LV_OBJ_FLAG_CLICKABLE);
     }
 
     CreateProductBottomNav(app_grid_layer_, text_font, icon_font);
@@ -1696,6 +1923,7 @@ void LcdDisplay::HideAppGrid() {
         lv_obj_del(app_grid_layer_);
         app_grid_layer_ = nullptr;
     }
+    BringTouchAppLauncherToFront();
 }
 
 void LcdDisplay::ShowAppDetail(const char* title, const char* subtitle, const char* const* actions, size_t action_count) {
@@ -1721,8 +1949,8 @@ void LcdDisplay::ShowAppDetail(const char* title, const char* subtitle, const ch
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
@@ -1738,6 +1966,7 @@ void LcdDisplay::ShowAppDetail(const char* title, const char* subtitle, const ch
     lv_obj_set_style_pad_row(list, 10, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
 
     for (size_t i = 0; i < action_count; ++i) {
         lv_obj_t* action = lv_obj_create(list);
@@ -1808,8 +2037,8 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
@@ -1826,6 +2055,7 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
     lv_obj_set_style_pad_row(body, 12, 0);
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t* hero = lv_obj_create(body);
     lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
@@ -1954,6 +2184,8 @@ void LcdDisplay::ShowFeatureDashboard(const char* title, const char* subtitle, u
 }
 
 void LcdDisplay::ShowEyeIsland() {
+    Settings eye_ui_settings("eye_ui", false);
+    g_eye_height_cm = std::clamp<int>(eye_ui_settings.GetInt("height_cm", 170), 100, 220);
     cJSON* status = Application::GetInstance().GetEyeCareStatusJson();
     int score_value = 86;
     if (status != nullptr) {
@@ -1979,12 +2211,13 @@ void LcdDisplay::ShowEyeIsland() {
     lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
 
     CreateAppHeader(app_detail_layer_, "护眼岛", nullptr, lv_color_white(),
                     lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
 
     lv_obj_t* hero = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, 270);
+    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, 230);
     lv_obj_set_style_radius(hero, 28, 0);
     lv_obj_set_style_bg_color(hero, lv_color_hex(0xEFF9FF), 0);
     lv_obj_set_style_bg_grad_color(hero, lv_color_hex(0xE8F8EF), 0);
@@ -2033,11 +2266,11 @@ void LcdDisplay::ShowEyeIsland() {
     lv_obj_set_style_pad_all(metrics, 0, 0);
     lv_obj_set_style_pad_column(metrics, 8, 0);
     lv_obj_set_flex_flow(metrics, LV_FLEX_FLOW_ROW);
-    const char* metric_titles[] = {"用眼时长", "良好坐姿", "光照环境"};
-    const char* metric_values[] = {"3.2 小时", "92 %", "适中"};
-    for (int i = 0; i < 3; ++i) {
+    const char* metric_titles[] = {"用眼时长", "良好坐姿"};
+    const char* metric_values[] = {"3.2 小时", "92 %"};
+    for (int i = 0; i < 2; ++i) {
         lv_obj_t* card = lv_obj_create(metrics);
-        lv_obj_set_size(card, (LV_HOR_RES - kPagePad * 2 - 16) / 3, 82);
+        lv_obj_set_size(card, (LV_HOR_RES - kPagePad * 2 - 8) / 2, 82);
         lv_obj_set_style_radius(card, 14, 0);
         lv_obj_set_style_bg_color(card, lv_color_hex(0xFAFCFD), 0);
         lv_obj_set_style_border_width(card, 1, 0);
@@ -2052,35 +2285,81 @@ void LcdDisplay::ShowEyeIsland() {
         lv_obj_set_style_text_color(l2, lv_color_hex(0x42A542), 0);
     }
 
+    lv_obj_t* ergonomics = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(ergonomics, LV_HOR_RES - kPagePad * 2, 152);
+    lv_obj_set_style_radius(ergonomics, 18, 0);
+    lv_obj_set_style_bg_color(ergonomics, lv_color_hex(0xF5FAF7), 0);
+    lv_obj_set_style_border_width(ergonomics, 1, 0);
+    lv_obj_set_style_border_color(ergonomics, lv_color_hex(0xDDECE3), 0);
+    lv_obj_set_style_pad_all(ergonomics, 12, 0);
+    lv_obj_clear_flag(ergonomics, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* ergo_title = lv_label_create(ergonomics);
+    lv_label_set_text(ergo_title, "桌椅高度");
+    lv_obj_set_style_text_font(ergo_title, text_font, 0);
+    app_ui::StyleSectionTitle(ergo_title);
+    lv_obj_align(ergo_title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t* height_hint = lv_label_create(ergonomics);
+    lv_label_set_text(height_hint, "输入身高");
+    app_ui::StyleBody(height_hint);
+    lv_obj_set_style_text_color(height_hint, lv_color_hex(kTextSecondary), 0);
+    lv_obj_align(height_hint, LV_ALIGN_TOP_LEFT, 0, 42);
+
+    const char* adjust_text[] = {"−", "+"};
+    const int adjust_delta[] = {-1, 1};
+    for (int i = 0; i < 2; ++i) {
+        lv_obj_t* button = lv_obj_create(ergonomics);
+        lv_obj_set_size(button, 52, 48);
+        lv_obj_align(button, LV_ALIGN_TOP_RIGHT, i == 0 ? -142 : 0, 30);
+        lv_obj_set_style_radius(button, 14, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0xE6F4EA), 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(button, OnEyeHeightChanged, LV_EVENT_CLICKED,
+                            reinterpret_cast<void*>(static_cast<intptr_t>(adjust_delta[i])));
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, adjust_text[i]);
+        lv_obj_set_style_text_font(label, text_font, 0);
+        app_ui::StylePageTitle(label);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x2E8E57), 0);
+        lv_obj_center(label);
+    }
+
+    g_eye_height_label = lv_label_create(ergonomics);
+    lv_obj_set_width(g_eye_height_label, 86);
+    lv_obj_align(g_eye_height_label, LV_ALIGN_TOP_RIGHT, -54, 43);
+    lv_obj_set_style_text_align(g_eye_height_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(g_eye_height_label, text_font, 0);
+    app_ui::StyleCardTitle(g_eye_height_label);
+    lv_obj_set_style_text_color(g_eye_height_label, lv_color_hex(kTextPrimary), 0);
+    lv_obj_add_flag(g_eye_height_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(g_eye_height_label, OnEyeHeightInputClicked, LV_EVENT_CLICKED, nullptr);
+
+    g_eye_seat_label = lv_label_create(ergonomics);
+    lv_obj_align(g_eye_seat_label, LV_ALIGN_BOTTOM_LEFT, 0, -2);
+    lv_obj_set_style_text_color(g_eye_seat_label, lv_color_hex(0x2E8E57), 0);
+    g_eye_desk_label = lv_label_create(ergonomics);
+    lv_obj_align(g_eye_desk_label, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
+    lv_obj_set_style_text_color(g_eye_desk_label, lv_color_hex(0x2E8E57), 0);
+    UpdateEyeErgonomicsUi();
+
     lv_obj_t* tip = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(tip, LV_HOR_RES - kPagePad * 2, 106);
+    lv_obj_set_size(tip, LV_HOR_RES - kPagePad * 2, 112);
     lv_obj_set_style_radius(tip, 18, 0);
     lv_obj_set_style_bg_color(tip, lv_color_hex(0xFFFDF8), 0);
     lv_obj_set_style_border_width(tip, 1, 0);
     lv_obj_set_style_border_color(tip, lv_color_hex(0xF0EEE8), 0);
     lv_obj_set_style_pad_all(tip, 14, 0);
     lv_obj_set_flex_flow(tip, LV_FLEX_FLOW_COLUMN);
-    lv_obj_t* tip_title = lv_label_create(tip); lv_label_set_text(tip_title, "护眼小贴士");
+    lv_obj_t* tip_title = lv_label_create(tip); lv_label_set_text(tip_title, "坐姿小贴士");
     lv_obj_set_style_text_font(tip_title, text_font, 0);
-    lv_obj_t* tip_body = lv_label_create(tip); lv_label_set_text(tip_body, "每隔 30 分钟，远眺 10 分钟，让眼睛得到充分休息");
+    lv_obj_t* tip_body = lv_label_create(tip);
+    lv_label_set_text(tip_body, "双脚平放，膝盖约 90°；桌面接近肘部高度，屏幕略低于视线。");
     lv_obj_set_width(tip_body, LV_HOR_RES - 64);
     lv_label_set_long_mode(tip_body, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(tip_body, lv_color_hex(kTextSecondary), 0);
-
-    lv_obj_t* cta = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(cta, LV_HOR_RES - kPagePad * 2, 56);
-    lv_obj_set_style_radius(cta, 28, 0);
-    lv_obj_set_style_bg_color(cta, lv_color_hex(0x78CC55), 0);
-    lv_obj_set_style_bg_grad_color(cta, lv_color_hex(0x2EB19B), 0);
-    lv_obj_set_style_bg_grad_dir(cta, LV_GRAD_DIR_HOR, 0);
-    lv_obj_set_style_border_width(cta, 0, 0);
-    lv_obj_add_flag(cta, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(cta, OnAppActionClicked, LV_EVENT_CLICKED, this);
-    lv_obj_set_user_data(cta, const_cast<char*>("视力训练"));
-    lv_obj_t* cta_label = lv_label_create(cta); lv_label_set_text(cta_label, "开始护眼训练");
-    lv_obj_set_style_text_font(cta_label, text_font, 0);
-    lv_obj_set_style_text_color(cta_label, lv_color_white(), 0);
-    lv_obj_center(cta_label);
 
     CreateProductBottomNav(app_detail_layer_, text_font, icon_font);
     lv_obj_move_foreground(app_detail_layer_);
@@ -2103,6 +2382,7 @@ void LcdDisplay::ShowEyeTraining() {
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     CreateAppHeader(app_detail_layer_, "护眼岛 - 训练", nullptr, lv_color_white(),
                     lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
 
@@ -2231,8 +2511,8 @@ void LcdDisplay::ShowMusicBox() {
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
@@ -2250,14 +2530,13 @@ void LcdDisplay::ShowMusicBox() {
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t* hero = lv_obj_create(body);
     lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
     lv_obj_set_style_min_height(hero, 176, 0);
     lv_obj_set_style_radius(hero, kCardRadius, 0);
     lv_obj_set_style_bg_color(hero, lv_color_hex(0x7FB9A6), 0);
-    lv_obj_set_style_bg_grad_color(hero, lv_color_hex(0xB7D8A6), 0);
-    lv_obj_set_style_bg_grad_dir(hero, LV_GRAD_DIR_HOR, 0);
     lv_obj_set_style_border_width(hero, 0, 0);
     lv_obj_set_style_pad_all(hero, 16, 0);
     lv_obj_set_style_shadow_width(hero, 0, 0);
@@ -2278,7 +2557,8 @@ void LcdDisplay::ShowMusicBox() {
         lv_image_set_src(image, music_image->image_dsc());
         lv_image_set_scale(image, 122);
         lv_obj_center(image);
-        lv_obj_set_y(image, -38);
+        lv_obj_clear_flag(image, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(image_slot, LV_OBJ_FLAG_CLICKABLE);
     }
 
     lv_obj_t* hero_title_label = lv_label_create(hero);
@@ -2331,10 +2611,12 @@ void LcdDisplay::ShowMusicBox() {
         lv_obj_set_style_radius(icon_box, kCardRadius, 0);
         lv_obj_set_style_bg_color(icon_box, lv_color_hex(0xE7EEF6), 0);
         lv_obj_set_style_border_width(icon_box, 0, 0);
+        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t* icon = lv_label_create(icon_box);
         lv_label_set_text(icon, MusicSceneIcon(scene.scene));
         lv_obj_set_style_text_font(icon, icon_font, 0);
         lv_obj_set_style_text_color(icon, lv_color_hex(0x335C81), 0);
+        lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_center(icon);
 
         lv_obj_t* text_box = lv_obj_create(card);
@@ -2344,12 +2626,17 @@ void LcdDisplay::ShowMusicBox() {
         lv_obj_set_style_pad_all(text_box, 0, 0);
         lv_obj_set_style_margin_left(text_box, 12, 0);
         lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(text_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(text_box, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t* title_label = lv_label_create(text_box);
         lv_label_set_text(title_label, scene.scene.c_str());
         lv_obj_set_style_text_font(title_label, text_font, 0);
         app_ui::StyleCardTitle(title_label);
         lv_obj_set_style_text_color(title_label, lv_color_hex(kTextPrimary), 0);
+        lv_obj_set_width(title_label, LV_HOR_RES - kPagePad * 2 - 140);
+        lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_clear_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
 
         char desc[128];
         if (scene.duration_seconds > 0) {
@@ -2364,11 +2651,14 @@ void LcdDisplay::ShowMusicBox() {
         lv_label_set_long_mode(desc_label, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(desc_label, lv_color_hex(kTextSecondary), 0);
         lv_obj_set_style_margin_top(desc_label, 3, 0);
+        lv_obj_set_style_text_align(desc_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_clear_flag(desc_label, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t* play = lv_label_create(card);
         lv_label_set_text(play, FONT_AWESOME_PLAY);
         lv_obj_set_style_text_font(play, icon_font, 0);
         lv_obj_set_style_text_color(play, lv_color_hex(0x8CA099), 0);
+        lv_obj_clear_flag(play, LV_OBJ_FLAG_CLICKABLE);
     }
 
     if (scenes.empty()) {
@@ -2393,6 +2683,9 @@ void LcdDisplay::ShowMusicBox() {
 }
 
 void LcdDisplay::ShowNatureSound(const char* title, const char* path) {
+    // Local music pages are static. Stop any residual face animation so JPEG
+    // decoding cannot keep invalidating the display behind this opaque page.
+    mjpeg_player_port_stop_wait(1000);
     if (path != nullptr && path[0] != '\0') {
         Application::GetInstance().GetAudioService().PlayAudioFile(path);
     }
@@ -2409,6 +2702,8 @@ void LcdDisplay::ShowNatureSound(const char* title, const char* path) {
     lv_obj_set_style_pad_row(app_detail_layer_, 14, 0);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     CreateAppHeader(app_detail_layer_, "自然之声", nullptr, lv_color_white(),
                     lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
 
@@ -2425,6 +2720,7 @@ void LcdDisplay::ShowNatureSound(const char* title, const char* path) {
         lv_obj_t* image = lv_image_create(art);
         lv_image_set_src(image, island->image_dsc());
         lv_image_set_scale(image, 360);
+        lv_obj_clear_flag(image, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_center(image);
     }
     lv_obj_t* name = lv_label_create(app_detail_layer_);
@@ -2466,8 +2762,8 @@ void LcdDisplay::ShowAiSpeaking() {
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
@@ -2484,6 +2780,7 @@ void LcdDisplay::ShowAiSpeaking() {
     lv_obj_set_style_pad_row(body, 12, 0);
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t* hero = lv_obj_create(body);
     lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
@@ -2587,10 +2884,12 @@ void LcdDisplay::ShowAiSpeaking() {
         lv_obj_set_style_radius(icon_box, kCardRadius, 0);
         lv_obj_set_style_bg_color(icon_box, lv_color_hex(0xEFE8F7), 0);
         lv_obj_set_style_border_width(icon_box, 0, 0);
+        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t* icon = lv_label_create(icon_box);
         lv_label_set_text(icon, scenario.icon);
         lv_obj_set_style_text_font(icon, icon_font, 0);
         lv_obj_set_style_text_color(icon, lv_color_hex(0x6A4C93), 0);
+        lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_center(icon);
 
         lv_obj_t* text_box = lv_obj_create(card);
@@ -2600,12 +2899,14 @@ void LcdDisplay::ShowAiSpeaking() {
         lv_obj_set_style_pad_all(text_box, 0, 0);
         lv_obj_set_style_margin_left(text_box, 12, 0);
         lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(text_box, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t* title_label = lv_label_create(text_box);
         lv_label_set_text(title_label, scenario.title);
         lv_obj_set_style_text_font(title_label, text_font, 0);
         app_ui::StyleCardTitle(title_label);
         lv_obj_set_style_text_color(title_label, lv_color_hex(kTextPrimary), 0);
+        lv_obj_clear_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t* desc_label = lv_label_create(text_box);
         lv_label_set_text(desc_label, scenario.description);
@@ -2614,11 +2915,13 @@ void LcdDisplay::ShowAiSpeaking() {
         lv_label_set_long_mode(desc_label, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(desc_label, lv_color_hex(kTextSecondary), 0);
         lv_obj_set_style_margin_top(desc_label, 3, 0);
+        lv_obj_clear_flag(desc_label, LV_OBJ_FLAG_CLICKABLE);
 
         lv_obj_t* play = lv_label_create(card);
         lv_label_set_text(play, FONT_AWESOME_PLAY);
         lv_obj_set_style_text_font(play, icon_font, 0);
         lv_obj_set_style_text_color(play, lv_color_hex(0x8CA099), 0);
+        lv_obj_clear_flag(play, LV_OBJ_FLAG_CLICKABLE);
     }
 
     CreateProductBottomNav(app_detail_layer_, text_font, icon_font);
@@ -2627,6 +2930,13 @@ void LcdDisplay::ShowAiSpeaking() {
 
 void LcdDisplay::ShowAiChat(const char* scenario) {
     DisplayLockGuard lock(this);
+    const AiScenarioItem* selected = nullptr;
+    for (const auto& item : kAiScenarios) {
+        if (scenario != nullptr && strcmp(item.title, scenario) == 0) {
+            selected = &item;
+            break;
+        }
+    }
     if (app_detail_layer_) lv_obj_del(app_detail_layer_);
     if (app_grid_layer_) lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
     app_detail_layer_ = lv_obj_create(lv_screen_active());
@@ -2636,6 +2946,8 @@ void LcdDisplay::ShowAiChat(const char* scenario) {
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
     lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     CreateAppHeader(app_detail_layer_, "AI对话", scenario, lv_color_white(),
                     lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
 
@@ -2646,16 +2958,18 @@ void LcdDisplay::ShowAiChat(const char* scenario) {
     lv_obj_set_style_pad_all(chat, 4, 0);
     lv_obj_set_style_pad_row(chat, 14, 0);
     lv_obj_set_flex_flow(chat, LV_FLEX_FLOW_COLUMN);
+    char welcome[96];
+    snprintf(welcome, sizeof(welcome), "已进入「%s」场景",
+             selected != nullptr ? selected->title : (scenario != nullptr ? scenario : "AI对话"));
     const char* messages[] = {
-        "你好呀！我是小艾，很高兴和你聊天 😊",
-        "给我讲一个关于星星的小故事",
-        "从前有个小树苗，它想爬上大树，到山顶看美丽的星空。它日复一日地努力，终于长成参天大树，看到了最美的星空。",
+        welcome,
+        selected != nullptr ? selected->description : "场景已准备好，请开始说话。",
     };
-    for (int i = 0; i < 3; ++i) {
-        const bool user = i == 1;
+    for (int i = 0; i < 2; ++i) {
+        const bool user = false;
         lv_obj_t* bubble = lv_obj_create(chat);
         lv_obj_set_size(bubble, user ? 300 : 380, LV_SIZE_CONTENT);
-        lv_obj_set_style_min_height(bubble, i == 2 ? 150 : 64, 0);
+        lv_obj_set_style_min_height(bubble, 64, 0);
         lv_obj_set_style_radius(bubble, 20, 0);
         lv_obj_set_style_bg_color(bubble, lv_color_hex(user ? 0xD8ECFF : 0xF2F6F8), 0);
         lv_obj_set_style_border_width(bubble, 0, 0);
@@ -2685,25 +2999,139 @@ void LcdDisplay::ShowHealthHub() {
                          "坐姿模型或摄像头不可用时显示异常状态，不影响饮水和休息提醒。");
 }
 
-void LcdDisplay::ShowExpressionAlbum() {
-    char hero_body[180];
-    auto style = CurrentPetStyleName();
-    snprintf(hero_body, sizeof(hero_body), "当前皮肤：%s。表情预览只从 /sdcard/style/%s/<filename>.mjpeg 读取。", style.c_str(), style.c_str());
-    ShowFeatureDashboard("表情", "动画预览", 0x4F6F52,
-                         "皮肤表情", hero_body,
-                         kAlbumMetrics, sizeof(kAlbumMetrics) / sizeof(kAlbumMetrics[0]),
-                         kAlbumActions, kAlbumDescriptions, kAlbumIcons,
-                         sizeof(kAlbumActions) / sizeof(kAlbumActions[0]),
-                         "用于验证 idle、listen、talk、happy、sad 等统一文件名。旧 /sdcard/<文件名>.mjpeg 不再访问。");
-}
-
 void LcdDisplay::ShowDeviceSettings() {
-    ShowFeatureDashboard("设置", "设备资源", 0x2F4858,
-                         "设备控制", "提供亮度、音量、网络和 SD 卡资源诊断入口，适合触摸屏现场调试和产测。",
-                         kDeviceMetrics, sizeof(kDeviceMetrics) / sizeof(kDeviceMetrics[0]),
-                         kDeviceActions, kDeviceDescriptions, kDeviceIcons,
-                         sizeof(kDeviceActions) / sizeof(kDeviceActions[0]),
-                         "资源诊断会检查 /sdcard/yinyuehe、/sdcard/style/jinglingshu 和必要 MJPEG 文件。");
+    DisplayLockGuard lock(this);
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = theme->text_font()->font();
+    auto icon_font = theme->icon_font()->font();
+
+    if (app_detail_layer_ != nullptr) lv_obj_del(app_detail_layer_);
+    if (app_grid_layer_ != nullptr) lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+
+    app_detail_layer_ = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(kSurfaceBg), 0);
+    lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
+
+    CreateAppHeader(app_detail_layer_, "设备设置", nullptr, lv_color_white(),
+                    lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
+
+    lv_obj_t* body = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(body, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(body, 0, 0);
+    lv_obj_set_style_pad_all(body, 0, 0);
+    lv_obj_set_style_pad_row(body, 10, 0);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+
+    auto make_card = [&](lv_coord_t height) {
+        lv_obj_t* card = lv_obj_create(body);
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, height);
+        app_ui::StyleCard(card);
+        lv_obj_set_style_pad_all(card, 14, 0);
+        lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        return card;
+    };
+    auto make_title = [&](lv_obj_t* parent, const char* icon_text, const char* title) {
+        lv_obj_t* icon = lv_label_create(parent);
+        lv_label_set_text(icon, icon_text);
+        lv_obj_set_style_text_font(icon, icon_font, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(app_ui::kBrand), 0);
+        lv_obj_set_pos(icon, 0, 1);
+        lv_obj_t* label = lv_label_create(parent);
+        lv_label_set_text(label, title);
+        lv_obj_set_style_text_font(label, text_font, 0);
+        app_ui::StyleCardTitle(label);
+        lv_obj_set_style_text_color(label, lv_color_hex(kTextPrimary), 0);
+        lv_obj_set_pos(label, 34, 0);
+    };
+
+    lv_obj_t* wifi = make_card(88);
+    lv_obj_add_flag(wifi, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(wifi, OnDeviceWifiClicked, LV_EVENT_CLICKED, this);
+    make_title(wifi, FONT_AWESOME_WIFI, "网络设置");
+    lv_obj_t* wifi_desc = lv_label_create(wifi);
+    lv_label_set_text(wifi_desc, "无网络时也可进入，点击启动配网");
+    app_ui::StyleBody(wifi_desc);
+    lv_obj_set_style_text_color(wifi_desc, lv_color_hex(kTextSecondary), 0);
+    lv_obj_set_pos(wifi_desc, 34, 34);
+    lv_obj_clear_flag(wifi_desc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* wifi_arrow = lv_label_create(wifi);
+    lv_label_set_text(wifi_arrow, FONT_AWESOME_ANGLE_RIGHT);
+    lv_obj_set_style_text_font(wifi_arrow, icon_font, 0);
+    lv_obj_set_style_text_color(wifi_arrow, lv_color_hex(kTextSecondary), 0);
+    lv_obj_align(wifi_arrow, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_clear_flag(wifi_arrow, LV_OBJ_FLAG_CLICKABLE);
+
+    auto make_slider_card = [&](const char* icon_text, const char* title, int value,
+                                lv_event_cb_t callback) {
+        lv_obj_t* card = make_card(112);
+        make_title(card, icon_text, title);
+        lv_obj_t* value_label = lv_label_create(card);
+        lv_label_set_text_fmt(value_label, "%d%%", value);
+        lv_obj_set_style_text_font(value_label, text_font, 0);
+        lv_obj_set_style_text_color(value_label, lv_color_hex(app_ui::kBrand), 0);
+        lv_obj_align(value_label, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_t* slider = lv_slider_create(card);
+        lv_obj_set_size(slider, LV_HOR_RES - kPagePad * 2 - 28, 18);
+        lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -7);
+        lv_slider_set_range(slider, 5, 100);
+        lv_slider_set_value(slider, value, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(0xE4ECE8), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(app_ui::kBrand), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
+        lv_obj_set_style_border_width(slider, 2, LV_PART_KNOB);
+        lv_obj_set_style_border_color(slider, lv_color_hex(app_ui::kBrand), LV_PART_KNOB);
+        lv_obj_set_user_data(slider, value_label);
+        // Persist only when the finger is released to avoid excessive NVS writes.
+        lv_obj_add_event_cb(slider, callback, LV_EVENT_RELEASED, nullptr);
+    };
+
+    auto* codec = Board::GetInstance().GetAudioCodec();
+    make_slider_card(FONT_AWESOME_VOLUME_HIGH, "声音大小",
+                     codec != nullptr ? codec->output_volume() : 70, OnDeviceVolumeChanged);
+    auto* backlight = Board::GetInstance().GetBacklight();
+    make_slider_card(FONT_AWESOME_BRIGHTNESS, "屏幕亮度",
+                     backlight != nullptr ? backlight->brightness() : 80, OnDeviceBrightnessChanged);
+
+    lv_obj_t* care = make_card(108);
+    make_title(care, FONT_AWESOME_HEART, "关怀模式");
+    lv_obj_t* care_desc = lv_label_create(care);
+    lv_label_set_text(care_desc, "定时检测在场状态和坐姿，异常时提醒");
+    app_ui::StyleBody(care_desc);
+    lv_obj_set_width(care_desc, LV_HOR_RES - kPagePad * 2 - 112);
+    lv_label_set_long_mode(care_desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(care_desc, lv_color_hex(kTextSecondary), 0);
+    lv_obj_set_pos(care_desc, 34, 35);
+    lv_obj_t* care_switch = lv_switch_create(care);
+    lv_obj_set_size(care_switch, 58, 32);
+    lv_obj_align(care_switch, LV_ALIGN_RIGHT_MID, 0, 0);
+    const auto care_config = Application::GetInstance().GetEyeCareConfig();
+    if (care_config.enabled && care_config.posture_enabled) {
+        lv_obj_add_state(care_switch, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(care_switch, OnCareModeChanged, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t* privacy = make_card(94);
+    lv_obj_set_style_bg_color(privacy, lv_color_hex(0xEEF7F4), 0);
+    make_title(privacy, FONT_AWESOME_LOCK, "隐私与性能");
+    lv_obj_t* privacy_desc = lv_label_create(privacy);
+    lv_label_set_text(privacy_desc, "关怀模式关闭时不进行后台摄像头检测；无网络时仅保留本地设置。");
+    app_ui::StyleBody(privacy_desc);
+    lv_obj_set_width(privacy_desc, LV_HOR_RES - kPagePad * 2 - 28);
+    lv_label_set_long_mode(privacy_desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(privacy_desc, lv_color_hex(kTextSecondary), 0);
+    lv_obj_set_pos(privacy_desc, 0, 34);
+
+    lv_obj_move_foreground(app_detail_layer_);
 }
 
 void LcdDisplay::ShowMoreApps() {
@@ -2772,9 +3200,9 @@ void LcdDisplay::ShowPomodoroTimer() {
     lv_obj_clear_flag(bottom_glow, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* back = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(back, 42, 42);
-    lv_obj_set_pos(back, 18, 26);
-    lv_obj_set_style_radius(back, 14, 0);
+    lv_obj_set_size(back, 56, 56);
+    lv_obj_set_pos(back, 16, 18);
+    lv_obj_set_style_radius(back, 18, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(kSurfaceCard), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_80, 0);
     lv_obj_set_style_border_width(back, 1, 0);
@@ -2784,28 +3212,15 @@ void LcdDisplay::ShowPomodoroTimer() {
     lv_obj_t* back_icon = lv_label_create(back);
     lv_label_set_text(back_icon, FONT_AWESOME_ANGLE_LEFT);
     lv_obj_set_style_text_font(back_icon, icon_font, 0);
+    lv_obj_set_style_transform_scale(back_icon, 310, 0);
     lv_obj_set_style_text_color(back_icon, lv_color_hex(kTextPrimary), 0);
     lv_obj_center(back_icon);
 
-    lv_obj_t* title_icon = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(title_icon, 38, 38);
-    lv_obj_set_pos(title_icon, 76, 28);
-    lv_obj_set_style_radius(title_icon, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(title_icon, lv_color_hex(0xE8402E), 0);
-    lv_obj_set_style_bg_grad_color(title_icon, lv_color_hex(0xFF7657), 0);
-    lv_obj_set_style_bg_grad_dir(title_icon, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_border_width(title_icon, 0, 0);
-    lv_obj_clear_flag(title_icon, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t* title_dot = lv_obj_create(title_icon);
-    lv_obj_set_size(title_dot, 9, 9);
-    lv_obj_align(title_dot, LV_ALIGN_TOP_MID, 0, -2);
-    lv_obj_set_style_radius(title_dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(title_dot, lv_color_hex(0x63A34B), 0);
-    lv_obj_set_style_border_width(title_dot, 0, 0);
-
     lv_obj_t* title = lv_label_create(app_detail_layer_);
     lv_label_set_text(title, "任务专注计时");
-    lv_obj_set_pos(title, 125, 31);
+    lv_obj_set_width(title, 300);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(title, text_font, 0);
     app_ui::StylePageTitle(title);
     lv_obj_set_style_text_color(title, lv_color_hex(kTextPrimary), 0);
@@ -3058,8 +3473,8 @@ void LcdDisplay::ShowTaskScheduler() {
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
@@ -3069,137 +3484,6 @@ void LcdDisplay::ShowTaskScheduler() {
 
     cJSON* reminders = Application::GetInstance().GetRemindersJson();
     cJSON* tasks = reminders != nullptr ? cJSON_GetObjectItem(reminders, "tasks") : nullptr;
-    const time_t now = time(nullptr);
-    int pending_count = 0;
-    int fired_count = 0;
-    int64_t next_time = 0;
-    const char* next_content = nullptr;
-
-    if (cJSON_IsArray(tasks)) {
-        cJSON* item = nullptr;
-        cJSON_ArrayForEach(item, tasks) {
-            auto remind_at = cJSON_GetObjectItem(item, "remind_at");
-            auto content = cJSON_GetObjectItem(item, "content");
-            auto fired = cJSON_GetObjectItem(item, "fired");
-            const bool is_fired = cJSON_IsBool(fired) && fired->valueint == 1;
-            if (is_fired) {
-                fired_count++;
-                continue;
-            }
-            pending_count++;
-            if (cJSON_IsNumber(remind_at) && cJSON_IsString(content)) {
-                int64_t t = (int64_t)remind_at->valuedouble;
-                if (t > now && (next_time == 0 || t < next_time)) {
-                    next_time = t;
-                    next_content = content->valuestring;
-                }
-            }
-        }
-    }
-
-    lv_obj_t* hero = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(hero, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
-    lv_obj_set_style_min_height(hero, 116, 0);
-    lv_obj_set_style_radius(hero, kCardRadius, 0);
-    lv_obj_set_style_bg_color(hero, lv_color_white(), 0);
-    lv_obj_set_style_border_width(hero, 1, 0);
-    lv_obj_set_style_border_color(hero, lv_color_hex(0xE8ECEF), 0);
-    lv_obj_set_style_pad_all(hero, 12, 0);
-    lv_obj_set_style_shadow_width(hero, 0, 0);
-    lv_obj_set_scrollbar_mode(hero, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(hero, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-    lv_obj_t* hero_title = lv_label_create(hero);
-    lv_label_set_text(hero_title, "今天  05月20日  周一");
-    lv_obj_set_style_text_color(hero_title, lv_color_hex(kTextPrimary), 0);
-
-    char next_line[96];
-    if (next_time > 0) {
-        struct tm tm_time = {};
-        time_t next_time_value = (time_t)next_time;
-        localtime_r(&next_time_value, &tm_time);
-        char time_text[24];
-        strftime(time_text, sizeof(time_text), "%H:%M", &tm_time);
-        snprintf(next_line, sizeof(next_line), "%s  %s", time_text, next_content != nullptr ? next_content : "提醒");
-    } else {
-        snprintf(next_line, sizeof(next_line), "暂无任务");
-    }
-    lv_obj_t* next_label = lv_label_create(hero);
-    lv_label_set_text(next_label, next_line);
-    lv_obj_set_width(next_label, LV_HOR_RES - kPagePad * 2 - 32);
-    lv_label_set_long_mode(next_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(next_label, text_font, 0);
-    app_ui::StyleBody(next_label);
-    lv_obj_set_style_text_color(next_label, lv_color_hex(kTextSecondary), 0);
-    lv_obj_set_style_margin_top(next_label, 2, 0);
-
-    lv_obj_t* metrics = lv_obj_create(hero);
-    lv_obj_set_size(metrics, LV_HOR_RES - kPagePad * 2 - 24, 42);
-    lv_obj_set_style_bg_opa(metrics, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(metrics, 0, 0);
-    lv_obj_set_style_pad_all(metrics, 0, 0);
-    lv_obj_set_style_margin_top(metrics, 8, 0);
-    lv_obj_set_flex_flow(metrics, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(metrics, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    const char* metric_labels[] = {"日\n19", "一\n20", "二\n21", "三\n22", "四\n23", "五\n24", "六\n25"};
-    for (int day = 0; day < 7; ++day) {
-        lv_obj_t* chip = lv_obj_create(metrics);
-        lv_obj_set_size(chip, 50, 40);
-        lv_obj_set_style_radius(chip, 12, 0);
-        lv_obj_set_style_bg_color(chip, lv_color_hex(day == 1 ? 0x48B969 : 0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(chip, day == 1 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(chip, 0, 0);
-        lv_obj_set_style_shadow_width(chip, 0, 0);
-        lv_obj_set_style_pad_all(chip, 0, 0);
-        lv_obj_t* chip_label = lv_label_create(chip);
-        lv_label_set_text(chip_label, metric_labels[day]);
-        lv_obj_set_style_text_align(chip_label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(chip_label, lv_color_hex(day == 1 ? 0xFFFFFF : 0x596662), 0);
-        lv_obj_center(chip_label);
-    }
-
-    lv_obj_t* quick_title = lv_label_create(app_detail_layer_);
-    lv_label_set_text(quick_title, "专注计时器");
-    lv_obj_set_style_text_font(quick_title, text_font, 0);
-    lv_obj_set_style_text_color(quick_title, lv_color_hex(0x15231F), 0);
-    lv_obj_set_style_margin_top(quick_title, 10, 0);
-
-    lv_obj_t* quick_row = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(quick_row, LV_HOR_RES - kPagePad * 2, 74);
-    lv_obj_set_style_bg_opa(quick_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(quick_row, 0, 0);
-    lv_obj_set_style_pad_all(quick_row, 0, 0);
-    lv_obj_set_style_pad_column(quick_row, 8, 0);
-    lv_obj_set_flex_flow(quick_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(quick_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    for (const auto& preset : kQuickTimerPresets) {
-        lv_obj_t* quick = lv_obj_create(quick_row);
-        lv_obj_set_size(quick, 106, 66);
-        lv_obj_set_style_radius(quick, kCardRadius, 0);
-        lv_obj_set_style_bg_color(quick, lv_color_hex(kSurfaceCard), 0);
-        lv_obj_set_style_border_width(quick, 1, 0);
-        lv_obj_set_style_border_color(quick, lv_color_hex(0xCFE0D8), 0);
-        lv_obj_set_style_pad_all(quick, 4, 0);
-        lv_obj_set_style_shadow_width(quick, 0, 0);
-        lv_obj_set_scrollbar_mode(quick, LV_SCROLLBAR_MODE_OFF);
-        lv_obj_set_flex_flow(quick, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(quick, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_add_flag(quick, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_user_data(quick, const_cast<QuickTimerPreset*>(&preset));
-        lv_obj_add_event_cb(quick, OnTaskQuickTimerClicked, LV_EVENT_CLICKED, this);
-
-        lv_obj_t* time_label = lv_label_create(quick);
-        lv_label_set_text(time_label, preset.title);
-        lv_obj_set_style_text_font(time_label, text_font, 0);
-        lv_obj_set_style_text_color(time_label, lv_color_hex(0x1D6B5F), 0);
-
-        lv_obj_t* desc_label = lv_label_create(quick);
-        lv_label_set_text(desc_label, preset.content);
-        lv_obj_set_style_text_color(desc_label, lv_color_hex(0x60736B), 0);
-    }
 
     lv_obj_t* list_header = lv_obj_create(app_detail_layer_);
     lv_obj_set_size(list_header, LV_HOR_RES - kPagePad * 2, 46);
@@ -3210,7 +3494,7 @@ void LcdDisplay::ShowTaskScheduler() {
     lv_obj_set_flex_align(list_header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* list_title = lv_label_create(list_header);
-    lv_label_set_text(list_title, "任务列表");
+    lv_label_set_text(list_title, "全部任务");
     lv_obj_set_style_text_font(list_title, text_font, 0);
     lv_obj_set_style_text_color(list_title, lv_color_hex(0x15231F), 0);
 
@@ -3227,7 +3511,7 @@ void LcdDisplay::ShowTaskScheduler() {
     lv_obj_center(add_label);
 
     lv_obj_t* list = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(list, LV_HOR_RES - kPagePad * 2, 300);
+    lv_obj_set_size(list, LV_HOR_RES - kPagePad * 2, 0);
     lv_obj_set_flex_grow(list, 1);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
@@ -3235,12 +3519,13 @@ void LcdDisplay::ShowTaskScheduler() {
     lv_obj_set_style_pad_row(list, 8, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
 
     int rendered = 0;
     if (cJSON_IsArray(tasks)) {
         cJSON* item = nullptr;
         cJSON_ArrayForEach(item, tasks) {
-            if (rendered >= 5) {
+            if (rendered >= 8) {
                 break;
             }
             auto remind_at = cJSON_GetObjectItem(item, "remind_at");
@@ -3328,7 +3613,7 @@ void LcdDisplay::ShowTaskScheduler() {
         lv_obj_set_style_text_color(empty_text, lv_color_hex(0x15231F), 0);
 
         lv_obj_t* empty_hint = lv_label_create(empty);
-        lv_label_set_text(empty_hint, "点快捷定时，或语音添加");
+        lv_label_set_text(empty_hint, "可以通过语音添加新任务");
         lv_obj_set_width(empty_hint, LV_HOR_RES - 72);
         lv_label_set_long_mode(empty_hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_align(empty_hint, LV_TEXT_ALIGN_CENTER, 0);
@@ -3357,6 +3642,8 @@ void LcdDisplay::ShowTaskStats() {
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
     lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     CreateAppHeader(app_detail_layer_, "任务统计", nullptr, lv_color_white(),
                     lv_color_hex(kTextPrimary), lv_color_hex(kTextSecondary));
 
@@ -3444,6 +3731,16 @@ void LcdDisplay::ShowPetGarden() {
     auto icon_font = lvgl_theme->icon_font()->font();
     lv_obj_t* screen = lv_screen_active();
     const std::string current_style = CurrentPetStyleName();
+    Settings habit_settings("pet_habit", true);
+    const int32_t today = static_cast<int32_t>(time(nullptr) / 86400);
+    const int32_t saved_day = habit_settings.GetInt("day", -1);
+    if (saved_day != today) {
+        habit_settings.SetInt("day", today);
+        habit_settings.SetInt("daily_mask", 0);
+    }
+    g_pet_daily_mask = habit_settings.GetInt("daily_mask", 0) & 0x07;
+    g_pet_growth = habit_settings.GetInt("growth", 0);
+    g_pet_streak = habit_settings.GetInt("streak", 0);
 
     if (app_detail_layer_ != nullptr) {
         lv_obj_del(app_detail_layer_);
@@ -3460,13 +3757,13 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
     lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
-    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_scroll_dir(app_detail_layer_, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(app_detail_layer_, 10, 0);
 
-    CreateAppHeader(app_detail_layer_, "萌宠", "皮肤", lv_color_hex(0xEFE7DC),
+    CreateAppHeader(app_detail_layer_, "宠物花园", "习惯养成", lv_color_hex(0xEFE7DC),
                     lv_color_hex(0x2B211A), lv_color_hex(0x7B6A5A));
 
     lv_obj_t* hero = lv_obj_create(app_detail_layer_);
@@ -3486,11 +3783,20 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_set_style_radius(avatar, kCardRadius, 0);
     lv_obj_set_style_bg_color(avatar, lv_color_hex(0xF4D3A0), 0);
     lv_obj_set_style_border_width(avatar, 0, 0);
-    lv_obj_t* avatar_icon = lv_label_create(avatar);
-    lv_label_set_text(avatar_icon, FONT_AWESOME_GAMEPAD);
-    lv_obj_set_style_text_font(avatar_icon, icon_font, 0);
-    lv_obj_set_style_text_color(avatar_icon, lv_color_hex(0x6E4F35), 0);
-    lv_obj_center(avatar_icon);
+    auto pet_collection = lvgl_theme->emoji_collection();
+    const LvglImage* pet_image = pet_collection ? pet_collection->GetEmojiImage("app_pet") : nullptr;
+    if (pet_image != nullptr) {
+        lv_obj_t* avatar_image = lv_image_create(avatar);
+        lv_image_set_src(avatar_image, pet_image->image_dsc());
+        lv_image_set_scale(avatar_image, 150);
+        lv_obj_center(avatar_image);
+    } else {
+        lv_obj_t* avatar_icon = lv_label_create(avatar);
+        lv_label_set_text(avatar_icon, FONT_AWESOME_GAMEPAD);
+        lv_obj_set_style_text_font(avatar_icon, icon_font, 0);
+        lv_obj_set_style_text_color(avatar_icon, lv_color_hex(0x6E4F35), 0);
+        lv_obj_center(avatar_icon);
+    }
 
     lv_obj_t* hero_text = lv_obj_create(hero);
     lv_obj_set_size(hero_text, LV_HOR_RES - kPagePad * 2 - 144, LV_SIZE_CONTENT);
@@ -3507,18 +3813,90 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_set_style_text_color(pet_name, lv_color_white(), 0);
 
     lv_obj_t* pet_state = lv_label_create(hero_text);
-    lv_label_set_text(pet_state, "当前皮肤");
+    lv_label_set_text(pet_state, "陪你养成好习惯");
     lv_obj_set_style_text_color(pet_state, lv_color_hex(0xF6DDB9), 0);
     lv_obj_set_style_margin_top(pet_state, 4, 0);
 
-    char style_path[96];
-    snprintf(style_path, sizeof(style_path), "/sdcard/style/%s", current_style.c_str());
-    lv_obj_t* path_label = lv_label_create(hero_text);
-    lv_label_set_text(path_label, style_path);
-    lv_obj_set_width(path_label, LV_HOR_RES - kPagePad * 2 - 154);
-    lv_label_set_long_mode(path_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(path_label, lv_color_hex(0xF6DDB9), 0);
-    lv_obj_set_style_margin_top(path_label, 8, 0);
+    g_pet_growth_label = lv_label_create(hero_text);
+    lv_obj_set_style_text_color(g_pet_growth_label, lv_color_hex(0xFFF4DF), 0);
+    lv_obj_set_style_margin_top(g_pet_growth_label, 8, 0);
+    g_pet_progress_label = lv_label_create(hero_text);
+    lv_obj_set_width(g_pet_progress_label, LV_HOR_RES - kPagePad * 2 - 154);
+    lv_label_set_long_mode(g_pet_progress_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(g_pet_progress_label, lv_color_hex(0xF6DDB9), 0);
+    lv_obj_set_style_margin_top(g_pet_progress_label, 4, 0);
+
+    lv_obj_t* skin_button = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(skin_button, LV_HOR_RES - kPagePad * 2, 52);
+    lv_obj_set_style_radius(skin_button, 18, 0);
+    lv_obj_set_style_bg_color(skin_button, lv_color_hex(0xFFF2D7), 0);
+    lv_obj_set_style_border_width(skin_button, 1, 0);
+    lv_obj_set_style_border_color(skin_button, lv_color_hex(0xE3C99F), 0);
+    lv_obj_set_style_pad_left(skin_button, 16, 0);
+    lv_obj_set_style_pad_right(skin_button, 16, 0);
+    lv_obj_set_style_shadow_width(skin_button, 0, 0);
+    lv_obj_clear_flag(skin_button, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(skin_button, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(skin_button, OnPetSkinsOpenClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t* skin_button_label = lv_label_create(skin_button);
+    lv_label_set_text(skin_button_label, FONT_AWESOME_IMAGE "  更换皮肤");
+    lv_obj_set_style_text_font(skin_button_label, text_font, 0);
+    lv_obj_set_style_text_color(skin_button_label, lv_color_hex(0x7A4B25), 0);
+    lv_obj_center(skin_button_label);
+    lv_obj_clear_flag(skin_button_label, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* habit_title = lv_label_create(app_detail_layer_);
+    lv_label_set_text(habit_title, "今日习惯");
+    lv_obj_set_style_text_font(habit_title, text_font, 0);
+    app_ui::StyleSectionTitle(habit_title);
+    lv_obj_set_style_text_color(habit_title, lv_color_hex(0x2B211A), 0);
+
+    const char* habit_names[] = {"喝水", "专注 25 分钟", "睡前整理"};
+    const char* habit_desc[] = {"完成一次主动饮水", "安静完成一轮专注", "整理桌面，准备休息"};
+    const char* habit_icons[] = {FONT_AWESOME_HEART, FONT_AWESOME_CLOCK, FONT_AWESOME_STAR};
+    for (int i = 0; i < 3; ++i) {
+        lv_obj_t* card = lv_obj_create(app_detail_layer_);
+        g_pet_habit_cards[i] = card;
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, 82);
+        lv_obj_set_style_radius(card, 18, 0);
+        lv_obj_set_style_bg_color(card, lv_color_white(), 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(0xE5DDD3), 0);
+        lv_obj_set_style_pad_left(card, 14, 0);
+        lv_obj_set_style_pad_right(card, 14, 0);
+        lv_obj_set_style_shadow_width(card, 0, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, OnPetHabitClicked, LV_EVENT_CLICKED,
+                            reinterpret_cast<void*>(static_cast<intptr_t>(i)));
+
+        lv_obj_t* icon = lv_label_create(card);
+        lv_label_set_text(icon, habit_icons[i]);
+        lv_obj_set_style_text_font(icon, icon_font, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(0xA66D3F), 0);
+
+        lv_obj_t* text_box = lv_obj_create(card);
+        lv_obj_set_size(text_box, 250, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(text_box, 0, 0);
+        lv_obj_set_style_pad_all(text_box, 0, 0);
+        lv_obj_set_style_margin_left(text_box, 14, 0);
+        lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_t* name = lv_label_create(text_box);
+        lv_label_set_text(name, habit_names[i]);
+        app_ui::StyleCardTitle(name);
+        lv_obj_set_style_text_color(name, lv_color_hex(0x2B211A), 0);
+        lv_obj_t* desc = lv_label_create(text_box);
+        lv_label_set_text(desc, habit_desc[i]);
+        app_ui::StyleCaption(desc);
+
+        g_pet_habit_states[i] = lv_label_create(card);
+        lv_obj_set_style_margin_left(g_pet_habit_states[i], 8, 0);
+    }
+    UpdatePetHabitUi();
+
+#if 0
 
     lv_obj_t* section_title = lv_label_create(app_detail_layer_);
     lv_label_set_text(section_title, "皮肤");
@@ -3606,8 +3984,133 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_set_width(hint_text, LV_HOR_RES - 54);
     lv_label_set_long_mode(hint_text, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(hint_text, lv_color_hex(0x57483A), 0);
+#endif
 
     CreateProductBottomNav(app_detail_layer_, text_font, icon_font);
+    lv_obj_move_foreground(app_detail_layer_);
+}
+
+void LcdDisplay::ShowPetSkins() {
+    DisplayLockGuard lock(this);
+    StopPomodoroTimer();
+    LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = lvgl_theme->text_font()->font();
+    auto icon_font = lvgl_theme->icon_font()->font();
+    lv_obj_t* screen = lv_screen_active();
+    const std::string current_style = CurrentPetStyleName();
+
+    if (app_detail_layer_ != nullptr) {
+        lv_obj_del(app_detail_layer_);
+        app_detail_layer_ = nullptr;
+    }
+    if (app_grid_layer_ != nullptr) {
+        lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    app_detail_layer_ = lv_obj_create(screen);
+    lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_radius(app_detail_layer_, 0, 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF6F3EE), 0);
+    lv_obj_set_style_bg_opa(app_detail_layer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
+    lv_obj_set_style_pad_all(app_detail_layer_, kPagePad, 0);
+    lv_obj_set_style_pad_row(app_detail_layer_, 12, 0);
+    lv_obj_set_scrollbar_mode(app_detail_layer_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(app_detail_layer_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(app_detail_layer_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* header = CreateAppHeader(app_detail_layer_, "更换皮肤", nullptr, lv_color_hex(0xEFE7DC),
+                                       lv_color_hex(0x2B211A), lv_color_hex(0x7B6A5A));
+    lv_obj_t* back = lv_obj_get_child(header, 0);
+    if (back != nullptr) {
+        lv_obj_remove_event_cb(back, OnAppDetailBackClicked);
+        lv_obj_add_event_cb(back, OnPetSkinsBackClicked, LV_EVENT_CLICKED, this);
+    }
+
+    lv_obj_t* hint = lv_label_create(app_detail_layer_);
+    lv_label_set_text(hint, "选择已安装的宠物皮肤");
+    lv_obj_set_style_text_font(hint, text_font, 0);
+    app_ui::StyleCaption(hint);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x7B6A5A), 0);
+
+    lv_obj_t* list = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(list, LV_HOR_RES - kPagePad * 2, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_set_style_pad_row(list, 12, 0);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+
+    size_t installed_count = 0;
+    for (const auto& skin : kPetSkinPresets) {
+        if (!FileExists(skin.directory)) {
+            continue;
+        }
+        ++installed_count;
+        const bool active = current_style == skin.style_id;
+        lv_obj_t* card = lv_obj_create(list);
+        lv_obj_set_size(card, LV_HOR_RES - kPagePad * 2, 94);
+        lv_obj_set_style_radius(card, 20, 0);
+        lv_obj_set_style_bg_color(card, active ? lv_color_hex(0xFFF2D7) : lv_color_white(), 0);
+        lv_obj_set_style_border_width(card, active ? 2 : 1, 0);
+        lv_obj_set_style_border_color(card, active ? lv_color_hex(0xC88932) : lv_color_hex(0xE3D8CA), 0);
+        lv_obj_set_style_pad_left(card, 14, 0);
+        lv_obj_set_style_pad_right(card, 14, 0);
+        lv_obj_set_style_shadow_width(card, 0, 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_user_data(card, const_cast<PetSkinPreset*>(&skin));
+        lv_obj_add_event_cb(card, OnPetSkinClicked, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* icon_box = lv_obj_create(card);
+        lv_obj_set_size(icon_box, 58, 58);
+        lv_obj_set_style_radius(icon_box, 18, 0);
+        lv_obj_set_style_bg_color(icon_box, active ? lv_color_hex(0xC88932) : lv_color_hex(0xF3E6D5), 0);
+        lv_obj_set_style_border_width(icon_box, 0, 0);
+        lv_obj_set_style_pad_all(icon_box, 0, 0);
+        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(icon_box, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_t* icon = lv_label_create(icon_box);
+        lv_label_set_text(icon, active ? FONT_AWESOME_CHECK : FONT_AWESOME_GAMEPAD);
+        lv_obj_set_style_text_font(icon, icon_font, 0);
+        lv_obj_set_style_text_color(icon, active ? lv_color_white() : lv_color_hex(0x7A4B25), 0);
+        lv_obj_center(icon);
+
+        lv_obj_t* text_box = lv_obj_create(card);
+        lv_obj_set_size(text_box, 286, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(text_box, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(text_box, 0, 0);
+        lv_obj_set_style_pad_all(text_box, 0, 0);
+        lv_obj_set_style_margin_left(text_box, 14, 0);
+        lv_obj_clear_flag(text_box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(text_box, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_flex_flow(text_box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_t* title = lv_label_create(text_box);
+        lv_label_set_text(title, skin.title);
+        lv_obj_set_style_text_font(title, text_font, 0);
+        app_ui::StyleCardTitle(title);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x2B211A), 0);
+        lv_obj_t* status = lv_label_create(text_box);
+        lv_label_set_text(status, active ? "当前使用" : "点击切换");
+        app_ui::StyleCaption(status);
+        lv_obj_set_style_text_color(status, active ? lv_color_hex(0xA56524) : lv_color_hex(0x7B6A5A), 0);
+    }
+
+    if (installed_count == 0) {
+        lv_obj_t* empty = lv_label_create(list);
+        lv_label_set_text(empty, "暂无可用皮肤");
+        lv_obj_set_style_text_font(empty, text_font, 0);
+        app_ui::StyleCardTitle(empty);
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x7B6A5A), 0);
+        lv_obj_set_style_margin_top(empty, 36, 0);
+        lv_obj_set_align(empty, LV_ALIGN_CENTER);
+    }
+
     lv_obj_move_foreground(app_detail_layer_);
 }
 
@@ -4473,7 +4976,7 @@ void LcdDisplay::SetFaceImage(uint8_t *rgb565, uint32_t width, uint32_t height) 
 }
 
 bool LcdDisplay::ShowStaticIdleFace() {
-    bool player_stopped = (mjpeg_player_port_stop_wait(800) == ESP_OK);
+    bool player_stopped = (mjpeg_player_port_stop_wait(2000) == ESP_OK);
 
     DisplayLockGuard lock(this);
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
@@ -4630,6 +5133,12 @@ void LcdDisplay::SetEmotion(const char* emotion) {
     if (emotion == nullptr) {
         emotion = "neutral";
     }
+    const bool is_loading = strstr(emotion, "loading") != nullptr;
+    if (is_loading) {
+        DisplayLockGuard lock(this);
+        app_launcher_ready_ = false;
+        BringTouchAppLauncherToFront();
+    }
 
 #if !DISABLE_MJPEG_EMOTIONS
     // MJPEG animations use the current pet style directory, e.g.
@@ -4662,7 +5171,12 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         }
 
         ESP_LOGI(TAG, "SetEmotion -> MJPEG: %s", mjpeg_path);
-        mjpeg_player_port_play_file(mjpeg_path);
+        const esp_err_t play_result = mjpeg_player_port_play_file(mjpeg_path);
+        if (!is_loading && play_result == ESP_OK) {
+            DisplayLockGuard lock(this);
+            app_launcher_ready_ = true;
+            BringTouchAppLauncherToFront();
+        }
         return;
     }
 #endif
@@ -4727,6 +5241,8 @@ void LcdDisplay::SetEmotion(const char* emotion) {
             lv_label_set_text(emoji_label_, utf8);
             lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+            app_launcher_ready_ = !is_loading;
+            BringTouchAppLauncherToFront();
         }
         return;
     }
@@ -4758,6 +5274,8 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
     }
+    app_launcher_ready_ = !is_loading;
+    BringTouchAppLauncherToFront();
 
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
     // In WeChat message style, if emotion is neutral, don't display it

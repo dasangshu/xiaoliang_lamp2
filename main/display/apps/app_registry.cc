@@ -11,7 +11,6 @@ const char* const kPetActions[] = {"宠物中心", "喂养", "换肤"};
 const char* const kMusicActions[] = {"自然之声", "专注学习", "助眠放松"};
 const char* const kAiSpeakActions[] = {"日常对话", "英语练习", "情景列表"};
 const char* const kHealthActions[] = {"坐姿提醒", "饮水提醒", "休息打卡"};
-const char* const kAlbumActions[] = {"表情管理", "照片预览", "动画素材"};
 const char* const kDeviceActions[] = {"亮度", "音量", "网络"};
 const char* const kMoreActions[] = {"成长档案", "系统信息", "模块扩展"};
 
@@ -39,9 +38,6 @@ constexpr AppModule kModules[] = {
     {AppKind::kHealth, FONT_AWESOME_HEART, "app_health", "健康中心", "活力节奏",
      "饮水、休息与坐姿提醒", "习惯", 0xA05C3B, 0xF6E8DF,
      kHealthActions, 3},
-    {AppKind::kAlbum, FONT_AWESOME_IMAGE, "app_album", "表情相册", "动画素材",
-     "管理角色表情与动画", "创意", 0x547356, 0xE6EFE5,
-     kAlbumActions, 3},
     {AppKind::kDevice, FONT_AWESOME_GEAR, "app_device", "设备设置", "偏好设置",
      "亮度、音量与连接状态", "系统", 0x385668, 0xE3ECF0,
      kDeviceActions, 3},

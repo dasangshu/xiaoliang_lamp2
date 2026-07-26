@@ -1,6 +1,7 @@
 #include "afe_wake_word.h"
 #include "audio_service.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <sstream>
 
 #define DETECTION_RUNNING_EVENT 1
@@ -78,9 +79,34 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     afe_config->afe_perferred_core = 1;
     afe_config->afe_perferred_priority = 5;
     afe_config->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
-    
+
+    // ESP32-P4 RTCRAM is part of the generic internal heap, but it cannot
+    // satisfy the 128-bit accesses used by WakeNet's optimized SIMD kernels.
+    // The closed-source AFE allocator does not request MALLOC_CAP_SIMD for all
+    // of its small work buffers, so temporarily occupy the RTCRAM free block
+    // while the model is created. This keeps those buffers in SIMD-capable L2
+    // SRAM/PSRAM without permanently throwing away the useful RTC heap.
+    void* rtc_heap_guard = nullptr;
+#if CONFIG_IDF_TARGET_ESP32P4
+    const size_t rtc_largest = heap_caps_get_largest_free_block(MALLOC_CAP_RTCRAM);
+    if (rtc_largest > 512) {
+        rtc_heap_guard = heap_caps_malloc(rtc_largest - 256, MALLOC_CAP_RTCRAM);
+        ESP_LOGI(TAG, "AFE RTCRAM guard: largest=%u reserved=%u",
+                 (unsigned)rtc_largest, rtc_heap_guard != nullptr ? (unsigned)(rtc_largest - 256) : 0U);
+    }
+#endif
+
     afe_iface_ = esp_afe_handle_from_config(afe_config);
-    afe_data_ = afe_iface_->create_from_config(afe_config);
+    afe_data_ = afe_iface_ != nullptr ? afe_iface_->create_from_config(afe_config) : nullptr;
+
+    if (rtc_heap_guard != nullptr) {
+        heap_caps_free(rtc_heap_guard);
+    }
+
+    if (afe_iface_ == nullptr || afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE/WakeNet instance");
+        return false;
+    }
 
     xTaskCreate([](void* arg) {
         auto this_ = (AfeWakeWord*)arg;

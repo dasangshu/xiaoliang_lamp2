@@ -1,5 +1,6 @@
 #include "audio_service.h"
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -716,7 +717,7 @@ bool AudioService::PlayAudioFile(const char* path) {
     }
 
     auto* ctx = new LocalAudioTaskContext{this, task_path, generation};
-    BaseType_t ok = xTaskCreate([](void* arg) {
+    BaseType_t ok = xTaskCreateWithCaps([](void* arg) {
         auto* ctx = static_cast<LocalAudioTaskContext*>(arg);
         AudioService* service = ctx->service;
         char* path = ctx->path;
@@ -725,7 +726,8 @@ bool AudioService::PlayAudioFile(const char* path) {
         service->RunLocalAudioFileTask(path, generation);
         free(path);
         vTaskDelete(nullptr);
-    }, "local_audio_file", 4096 * 3, ctx, 3, nullptr);
+    }, "local_audio_file", 4096 * 3, ctx, 3, nullptr,
+       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "Failed to create local audio playback task");
