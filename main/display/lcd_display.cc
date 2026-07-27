@@ -979,10 +979,11 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
         .io_handle = panel_io,
         .panel_handle = panel,
         .control_handle = nullptr,
-        // Two line buffers keep LVGL asynchronous without binding its task to
-        // the ST7701 driver's unreliable VSYNC semaphore path.
-        .buffer_size = static_cast<uint32_t>(width_ * 80),
-        .double_buffer = true,
+        // Render a complete frame into the DPI driver's inactive framebuffer.
+        // Partial line buffers write into the framebuffer currently being
+        // scanned, which is visible as ghosting during page transitions.
+        .buffer_size = static_cast<uint32_t>(width_ * height_),
+        .double_buffer = false,
         .hres = static_cast<uint32_t>(width_),
         .vres = static_cast<uint32_t>(height_),
         .monochrome = false,
@@ -995,19 +996,20 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
         .flags = {
             .buff_dma = true,
             .buff_spiram = false,
-            .sw_rotate = true,
+            // Orientation is handled by the ST7701 panel. Avoid allocating a
+            // software-rotation buffer and rotating pixels on the CPU.
+            .sw_rotate = false,
             .swap_bytes = false,
-            .full_refresh = false,
+            .full_refresh = true,
             .direct_mode = false,
         },
     };
 
     const lvgl_port_display_dsi_cfg_t dpi_cfg = {
         .flags = {
-            // The ST7701 MIPI implementation does not reliably signal the
-            // refresh semaphore used by esp_lvgl_port's avoid-tearing mode.
-            // When enabled, LVGL can block and stop dispatching touch events.
-            .avoid_tearing = false,
+            // Swap complete frames on VSYNC instead of modifying the buffer
+            // that the panel is actively scanning.
+            .avoid_tearing = true,
         }
     };
     display_ = lvgl_port_add_disp_dsi(&disp_cfg, &dpi_cfg);
