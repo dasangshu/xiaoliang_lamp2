@@ -995,10 +995,7 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
         .flags = {
             .buff_dma = true,
             .buff_spiram = false,
-            // The panel driver already applies the board orientation. Keeping
-            // software rotation enabled adds work to every flush even though
-            // LVGL itself always stays at rotation 0 on this board.
-            .sw_rotate = false,
+            .sw_rotate = true,
             .swap_bytes = false,
             .full_refresh = false,
             .direct_mode = false,
@@ -1780,6 +1777,28 @@ void LcdDisplay::ShowAppGrid() {
         lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
+
+    lv_obj_t* home_button = lv_obj_create(app_grid_layer_);
+    lv_obj_set_size(home_button, LV_HOR_RES - 72, 58);
+    lv_obj_align(home_button, LV_ALIGN_BOTTOM_MID, 0, -28);
+    lv_obj_set_style_radius(home_button, 29, 0);
+    lv_obj_set_style_bg_color(home_button, lv_color_hex(app_ui::kBrand), 0);
+    lv_obj_set_style_bg_grad_color(home_button, lv_color_hex(app_ui::kHighlight), 0);
+    lv_obj_set_style_bg_grad_dir(home_button, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_border_width(home_button, 0, 0);
+    lv_obj_set_style_shadow_width(home_button, 0, 0);
+    lv_obj_set_style_pad_all(home_button, 0, 0);
+    lv_obj_clear_flag(home_button, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(home_button, LV_OBJ_FLAG_CLICKABLE);
+    app_ui::StylePressable(home_button);
+    lv_obj_add_event_cb(home_button, OnAppGridCloseClicked, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* home_label = lv_label_create(home_button);
+    lv_label_set_text(home_label, FONT_AWESOME_HOUSE "  返回主页");
+    lv_obj_set_style_text_font(home_label, text_font, 0);
+    lv_obj_set_style_text_color(home_label, lv_color_white(), 0);
+    lv_obj_clear_flag(home_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(home_label);
 
     CreateProductBottomNav(app_grid_layer_, text_font, icon_font);
     lv_obj_move_foreground(app_grid_layer_);
