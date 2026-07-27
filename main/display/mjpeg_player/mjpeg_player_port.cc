@@ -100,18 +100,18 @@ static bool set_player_state(player_state_t new_state) {
 
 static uint32_t target_fps_for_file(const char *filepath) {
     if (filepath == nullptr) {
-        return 12;
-    }
-    if (strstr(filepath, "idle.mjpeg") != nullptr) {
         return 8;
     }
+    if (strstr(filepath, "idle.mjpeg") != nullptr) {
+        return 6;
+    }
     if (strstr(filepath, "loading.mjpeg") != nullptr) {
-        return 10;
+        return 8;
     }
     if (strstr(filepath, "listen.mjpeg") != nullptr || strstr(filepath, "talk.mjpeg") != nullptr) {
-        return 12;
+        return 8;
     }
-    return 12;
+    return 8;
 }
 
 static esp_err_t safe_stop_player(uint32_t timeout_ms) {

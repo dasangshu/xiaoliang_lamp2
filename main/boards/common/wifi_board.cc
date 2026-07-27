@@ -25,6 +25,8 @@ static const char *TAG = "WifiBoard";
 
 // Connection timeout in seconds
 static constexpr int CONNECT_TIMEOUT_SEC = 60;
+static constexpr const char* WIFI_BOOT_SETTINGS_NAMESPACE = "wifi_boot";
+static constexpr const char* WIFI_BOOT_CONFIG_KEY = "config_next";
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -85,6 +87,24 @@ void WifiBoard::StartNetwork() {
                 break;
         }
     });
+
+    // ESP32-P4 uses an ESP32-C5 over SDIO for Wi-Fi. Switching a live station
+    // to AP mode can race the hosted RX task while it still owns packet
+    // buffers. A one-shot boot flag lets settings request configuration mode
+    // before station mode is ever started.
+    bool enter_config_on_boot = false;
+    {
+        Settings settings(WIFI_BOOT_SETTINGS_NAMESPACE, true);
+        enter_config_on_boot = settings.GetBool(WIFI_BOOT_CONFIG_KEY, false);
+        if (enter_config_on_boot) {
+            settings.SetBool(WIFI_BOOT_CONFIG_KEY, false);
+        }
+    }
+    if (enter_config_on_boot) {
+        ESP_LOGI(TAG, "One-shot boot request: starting WiFi config AP");
+        StartWifiConfigMode();
+        return;
+    }
 
     // EnterWifiConfigMode() may run before Initialize(); retry AP setup here.
     if (in_config_mode_) {
@@ -218,6 +238,27 @@ void WifiBoard::EnterWifiConfigMode() {
 
     auto& app = Application::GetInstance();
     auto state = app.GetDeviceState();
+
+#if CONFIG_IDF_TARGET_ESP32P4
+    if (state == kDeviceStateSpeaking || state == kDeviceStateListening || state == kDeviceStateIdle) {
+        // Do not hot-switch the hosted C5/SDIO transport. The old path could
+        // free an RX buffer twice when station shutdown overlapped AP startup.
+        // Reboot once and enter AP mode before station initialization instead.
+        if (config_reboot_pending_.exchange(true)) {
+            ESP_LOGW(TAG, "WiFi config reboot already pending");
+            return;
+        }
+        {
+            Settings settings(WIFI_BOOT_SETTINGS_NAMESPACE, true);
+            settings.SetBool(WIFI_BOOT_CONFIG_KEY, true);
+        }
+        GetDisplay()->ShowNotification("设备将重启并进入配网模式");
+        app.Schedule([]() {
+            Application::GetInstance().Reboot();
+        });
+        return;
+    }
+#endif
 
     if (state == kDeviceStateSpeaking || state == kDeviceStateListening || state == kDeviceStateIdle) {
         // Reset protocol (close audio channel, reset protocol)

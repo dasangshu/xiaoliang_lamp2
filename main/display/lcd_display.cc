@@ -155,6 +155,7 @@ struct PomodoroSession {
 PomodoroSession g_pomodoro;
 lv_obj_t* g_pomodoro_time_label = nullptr;
 lv_obj_t* g_pomodoro_state_label = nullptr;
+lv_obj_t* g_pomodoro_mode_label = nullptr;
 lv_obj_t* g_pomodoro_start_label = nullptr;
 lv_obj_t* g_pomodoro_done_label = nullptr;
 lv_obj_t* g_pomodoro_minutes_label = nullptr;
@@ -443,6 +444,9 @@ void UpdatePomodoroUi() {
     }
     if (g_pomodoro_state_label != nullptr) {
         lv_label_set_text(g_pomodoro_state_label, PomodoroStateName(g_pomodoro.state));
+    }
+    if (g_pomodoro_mode_label != nullptr) {
+        lv_label_set_text(g_pomodoro_mode_label, PomodoroModeName(g_pomodoro.mode));
     }
     if (g_pomodoro_start_label != nullptr) {
         const bool running = g_pomodoro.state == PomodoroState::kRunning;
@@ -991,7 +995,10 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
         .flags = {
             .buff_dma = true,
             .buff_spiram = false,
-            .sw_rotate = true,
+            // The panel driver already applies the board orientation. Keeping
+            // software rotation enabled adds work to every flush even though
+            // LVGL itself always stays at rotation 0 on this board.
+            .sw_rotate = false,
             .swap_bytes = false,
             .full_refresh = false,
             .direct_mode = false,
@@ -1107,6 +1114,7 @@ void LcdDisplay::StopPomodoroTimer() {
     }
     g_pomodoro_time_label = nullptr;
     g_pomodoro_state_label = nullptr;
+    g_pomodoro_mode_label = nullptr;
     g_pomodoro_start_label = nullptr;
     g_pomodoro_done_label = nullptr;
     g_pomodoro_minutes_label = nullptr;
@@ -1216,7 +1224,12 @@ void LcdDisplay::OnAppGridCloseClicked(lv_event_t* event) {
 void LcdDisplay::OnAppDetailBackClicked(lv_event_t* event) {
     auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
     if (display != nullptr) {
-        display->ShowAppGrid();
+        // Defer page deletion until LVGL has finished dispatching this touch
+        // event. Deleting the clicked object from its own callback can make
+        // the release intermittent on touch panels.
+        lv_async_call([](void* user_data) {
+            static_cast<LcdDisplay*>(user_data)->ShowAppGrid();
+        }, display);
     }
 }
 
@@ -1503,7 +1516,7 @@ void LcdDisplay::OnPomodoroStartClicked(lv_event_t* event) {
         g_pomodoro.last_tick = time(nullptr);
     }
     if (display != nullptr) {
-        display->ShowPomodoroTimer();
+        UpdatePomodoroUi();
     }
 }
 
@@ -1511,7 +1524,7 @@ void LcdDisplay::OnPomodoroResetClicked(lv_event_t* event) {
     auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
     PomodoroResetForMode(g_pomodoro.mode);
     if (display != nullptr) {
-        display->ShowPomodoroTimer();
+        UpdatePomodoroUi();
     }
 }
 
@@ -1521,7 +1534,7 @@ void LcdDisplay::OnPomodoroModeClicked(lv_event_t* event) {
     auto mode = target != nullptr ? static_cast<PomodoroMode>((intptr_t)lv_obj_get_user_data(target)) : PomodoroMode::kFocus;
     PomodoroResetForMode(mode);
     if (display != nullptr) {
-        display->ShowPomodoroTimer();
+        UpdatePomodoroUi();
     }
 }
 
@@ -1621,6 +1634,11 @@ void LcdDisplay::BringTouchAppLauncherToFront() {
 }
 
 void LcdDisplay::ShowAppGrid() {
+    // The app layer is fully opaque. Continuing to decode and invalidate a
+    // 480x800 MJPEG canvas behind it wastes CPU and makes touch/page rendering
+    // contend with the video pipeline.
+    mjpeg_player_port_stop_wait(1000);
+
     DisplayLockGuard lock(this);
     StopPomodoroTimer();
     auto* theme = static_cast<LvglTheme*>(current_theme_);
@@ -1631,9 +1649,16 @@ void LcdDisplay::ShowAppGrid() {
         lv_obj_del(app_detail_layer_);
         app_detail_layer_ = nullptr;
     }
+    if (face_canvas_ != nullptr) {
+        lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+    }
     if (app_grid_layer_ != nullptr) {
-        lv_obj_del(app_grid_layer_);
-        app_grid_layer_ = nullptr;
+        // Reuse the launcher instead of rebuilding all cards and decoding all
+        // icons every time a detail page returns.
+        lv_obj_remove_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(app_grid_layer_);
+        BringTouchAppLauncherToFront();
+        return;
     }
 
     app_grid_layer_ = lv_obj_create(lv_screen_active());
@@ -1922,6 +1947,10 @@ void LcdDisplay::HideAppGrid() {
     if (app_grid_layer_ != nullptr) {
         lv_obj_del(app_grid_layer_);
         app_grid_layer_ = nullptr;
+    }
+    if (face_canvas_ != nullptr && face_canvas_active_) {
+        lv_obj_remove_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(face_canvas_);
     }
     BringTouchAppLauncherToFront();
 }
@@ -3155,6 +3184,7 @@ void LcdDisplay::ShowPomodoroTimer() {
     PomodoroApplyElapsed();
     g_pomodoro_time_label = nullptr;
     g_pomodoro_state_label = nullptr;
+    g_pomodoro_mode_label = nullptr;
     g_pomodoro_start_label = nullptr;
     g_pomodoro_done_label = nullptr;
     g_pomodoro_minutes_label = nullptr;
@@ -3200,8 +3230,8 @@ void LcdDisplay::ShowPomodoroTimer() {
     lv_obj_clear_flag(bottom_glow, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* back = lv_obj_create(app_detail_layer_);
-    lv_obj_set_size(back, 56, 56);
-    lv_obj_set_pos(back, 16, 18);
+    lv_obj_set_size(back, 64, 64);
+    lv_obj_set_pos(back, 12, 14);
     lv_obj_set_style_radius(back, 18, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(kSurfaceCard), 0);
     lv_obj_set_style_bg_opa(back, LV_OPA_80, 0);
@@ -3214,6 +3244,7 @@ void LcdDisplay::ShowPomodoroTimer() {
     lv_obj_set_style_text_font(back_icon, icon_font, 0);
     lv_obj_set_style_transform_scale(back_icon, 310, 0);
     lv_obj_set_style_text_color(back_icon, lv_color_hex(kTextPrimary), 0);
+    lv_obj_clear_flag(back_icon, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(back_icon);
 
     lv_obj_t* title = lv_label_create(app_detail_layer_);
@@ -3338,11 +3369,11 @@ void LcdDisplay::ShowPomodoroTimer() {
     lv_obj_set_style_text_letter_space(g_pomodoro_time_label, 2, 0);
     lv_obj_align(g_pomodoro_time_label, LV_ALIGN_CENTER, 0, 2);
 
-    lv_obj_t* mode_label = lv_label_create(tomato);
-    lv_label_set_text(mode_label, PomodoroModeName(g_pomodoro.mode));
-    lv_obj_set_style_text_font(mode_label, text_font, 0);
-    lv_obj_set_style_text_color(mode_label, lv_color_hex(0xFFD3CA), 0);
-    lv_obj_align(mode_label, LV_ALIGN_CENTER, 0, 54);
+    g_pomodoro_mode_label = lv_label_create(tomato);
+    lv_label_set_text(g_pomodoro_mode_label, PomodoroModeName(g_pomodoro.mode));
+    lv_obj_set_style_text_font(g_pomodoro_mode_label, text_font, 0);
+    lv_obj_set_style_text_color(g_pomodoro_mode_label, lv_color_hex(0xFFD3CA), 0);
+    lv_obj_align(g_pomodoro_mode_label, LV_ALIGN_CENTER, 0, 54);
 
     lv_obj_t* reset = lv_obj_create(tomato);
     lv_obj_set_size(reset, 104, 38);
@@ -3384,14 +3415,17 @@ void LcdDisplay::ShowPomodoroTimer() {
     lv_obj_set_flex_flow(start_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(start_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(start_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(start_row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t* play_icon = lv_label_create(start_row);
     lv_label_set_text(play_icon, FONT_AWESOME_PLAY);
     lv_obj_set_style_text_font(play_icon, icon_font, 0);
     lv_obj_set_style_text_color(play_icon, lv_color_white(), 0);
+    lv_obj_clear_flag(play_icon, LV_OBJ_FLAG_CLICKABLE);
     g_pomodoro_start_label = lv_label_create(start_row);
     lv_obj_set_style_text_font(g_pomodoro_start_label, text_font, 0);
     app_ui::StyleButtonLabel(g_pomodoro_start_label);
     lv_obj_set_style_text_color(g_pomodoro_start_label, lv_color_white(), 0);
+    lv_obj_clear_flag(g_pomodoro_start_label, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t* stats = lv_obj_create(app_detail_layer_);
     lv_obj_set_size(stats, LV_HOR_RES - 36, 94);

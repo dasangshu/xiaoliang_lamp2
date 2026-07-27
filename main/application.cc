@@ -703,12 +703,13 @@ void Application::InitializeProtocol() {
             if (cJSON_IsString(emotion)) {
                 Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
                     auto state = GetDeviceState();
-                    if (state == kDeviceStateListening) {
-                        ESP_LOGI(TAG, "Ignore LLM emotion '%s' while listening", emotion_str.c_str());
+                    if (state == kDeviceStateSpeaking &&
+                        (emotion_str == "happy" || emotion_str == "happy.mjpeg")) {
+                        ESP_LOGI(TAG, "Keep talk.mjpeg for default LLM emotion '%s'", emotion_str.c_str());
                         return;
                     }
-                    if (emotion_str == "laughing" || emotion_str == "laughing.mjpeg") {
-                        ESP_LOGI(TAG, "Keep talk.mjpeg for LLM emotion '%s'", emotion_str.c_str());
+                    if (state == kDeviceStateListening) {
+                        ESP_LOGI(TAG, "Ignore LLM emotion '%s' while listening", emotion_str.c_str());
                         return;
                     }
                     auto display_emotion = ResolveLlmEmotionMjpeg(emotion_str);
