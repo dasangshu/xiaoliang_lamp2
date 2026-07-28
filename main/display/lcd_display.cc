@@ -20,10 +20,12 @@
 #include <sys/stat.h>
 #include <src/misc/cache/lv_cache.h>
 #include <time.h>
+#include <cctype>
 
 #include "board.h"
 #include "boards/common/wifi_board.h"
 #include "application.h"
+#include <wifi_manager.h>
 #include "mjpeg_player/mjpeg_player_port.h"
 
 #define TAG "LcdDisplay"
@@ -161,6 +163,11 @@ lv_obj_t* g_pomodoro_done_label = nullptr;
 lv_obj_t* g_pomodoro_minutes_label = nullptr;
 lv_obj_t* g_pomodoro_arc = nullptr;
 lv_obj_t* g_pomodoro_mode_buttons[3] = {nullptr, nullptr, nullptr};
+lv_obj_t* g_wifi_password_layer = nullptr;
+lv_obj_t* g_wifi_password_input = nullptr;
+std::string g_wifi_selected_ssid;
+std::vector<std::string> g_wifi_ssids;
+bool g_wifi_keyboard_lowercase = false;
 int g_eye_height_cm = 170;
 lv_obj_t* g_eye_height_label = nullptr;
 lv_obj_t* g_eye_seat_label = nullptr;
@@ -299,6 +306,143 @@ void OnEyeHeightInputClicked(lv_event_t* event) {
         lv_obj_center(label);
     }
     lv_obj_move_foreground(g_eye_height_input_layer);
+}
+
+void CloseWifiPasswordInput() {
+    if (g_wifi_password_layer != nullptr) {
+        lv_obj_del(g_wifi_password_layer);
+        g_wifi_password_layer = nullptr;
+        g_wifi_password_input = nullptr;
+    }
+}
+
+void OnWifiPasswordKeyClicked(lv_event_t* event) {
+    if (g_wifi_password_input == nullptr) return;
+    const char* key = static_cast<const char*>(lv_event_get_user_data(event));
+    if (strcmp(key, "DEL") == 0) {
+        lv_textarea_delete_char(g_wifi_password_input);
+    } else if (strcmp(key, "CASE") == 0) {
+        g_wifi_keyboard_lowercase = !g_wifi_keyboard_lowercase;
+    } else if (strlen(lv_textarea_get_text(g_wifi_password_input)) < 64) {
+        char value[2] = {key[0], '\0'};
+        if (g_wifi_keyboard_lowercase && std::isalpha(static_cast<unsigned char>(value[0]))) {
+            value[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(value[0])));
+        }
+        lv_textarea_add_text(g_wifi_password_input, value);
+    }
+}
+
+struct WifiConnectRequest {
+    std::string ssid;
+    std::string password;
+};
+
+void OnWifiConnectClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    if (display == nullptr || g_wifi_password_input == nullptr || g_wifi_selected_ssid.empty()) return;
+    auto* request = new WifiConnectRequest{
+        g_wifi_selected_ssid,
+        lv_textarea_get_text(g_wifi_password_input)
+    };
+    CloseWifiPasswordInput();
+    display->ShowNotification("正在连接 Wi-Fi…", 30000);
+    xTaskCreate([](void* arg) {
+        std::unique_ptr<WifiConnectRequest> request(static_cast<WifiConnectRequest*>(arg));
+        const bool connected = WifiManager::GetInstance().ConfigureWifi(request->ssid, request->password);
+        auto* display = Board::GetInstance().GetDisplay();
+        if (connected) {
+            display->ShowNotification("连接成功，正在进入主页…", 2500);
+            vTaskDelay(pdMS_TO_TICKS(800));
+            Application::GetInstance().Reboot();
+        } else {
+            display->ShowNotification("连接失败，请检查密码后重试", 3500);
+        }
+        vTaskDelete(nullptr);
+    }, "screen_wifi_connect", 6144, request, 3, nullptr);
+}
+
+void ShowWifiPasswordInput(LcdDisplay* display, const char* ssid) {
+    if (display == nullptr || ssid == nullptr) return;
+    CloseWifiPasswordInput();
+    g_wifi_selected_ssid = ssid;
+    g_wifi_keyboard_lowercase = false;
+
+    g_wifi_password_layer = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(g_wifi_password_layer, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_radius(g_wifi_password_layer, 0, 0);
+    lv_obj_set_style_bg_color(g_wifi_password_layer, lv_color_hex(0xF5F8F7), 0);
+    lv_obj_set_style_border_width(g_wifi_password_layer, 0, 0);
+    lv_obj_set_style_pad_all(g_wifi_password_layer, 12, 0);
+    lv_obj_clear_flag(g_wifi_password_layer, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(g_wifi_password_layer);
+    lv_label_set_text_fmt(title, "连接到 %s", ssid);
+    lv_obj_set_width(title, LV_HOR_RES - 40);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 18);
+
+    g_wifi_password_input = lv_textarea_create(g_wifi_password_layer);
+    lv_obj_set_size(g_wifi_password_input, LV_HOR_RES - 48, 62);
+    lv_obj_align(g_wifi_password_input, LV_ALIGN_TOP_MID, 0, 62);
+    lv_textarea_set_one_line(g_wifi_password_input, true);
+    lv_textarea_set_password_mode(g_wifi_password_input, true);
+    lv_textarea_set_max_length(g_wifi_password_input, 64);
+    lv_textarea_set_placeholder_text(g_wifi_password_input, "输入 Wi-Fi 密码（开放网络可留空）");
+
+    static const char* rows[] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+    const int row_lengths[] = {10, 10, 9, 7};
+    for (int row = 0; row < 4; ++row) {
+        const int key_w = 40;
+        const int gap = 5;
+        const int total_w = row_lengths[row] * key_w + (row_lengths[row] - 1) * gap;
+        const int start_x = (LV_HOR_RES - total_w) / 2;
+        for (int col = 0; col < row_lengths[row]; ++col) {
+            lv_obj_t* key = lv_obj_create(g_wifi_password_layer);
+            lv_obj_set_size(key, key_w, 58);
+            lv_obj_set_pos(key, start_x + col * (key_w + gap), 154 + row * 68);
+            lv_obj_set_style_radius(key, 10, 0);
+            lv_obj_set_style_bg_color(key, lv_color_white(), 0);
+            lv_obj_set_style_border_width(key, 1, 0);
+            lv_obj_set_style_border_color(key, lv_color_hex(0xDCE5E1), 0);
+            lv_obj_set_style_pad_all(key, 0, 0);
+            lv_obj_add_flag(key, LV_OBJ_FLAG_CLICKABLE);
+            char* key_value = const_cast<char*>(&rows[row][col]);
+            lv_obj_add_event_cb(key, OnWifiPasswordKeyClicked, LV_EVENT_CLICKED, key_value);
+            char label_text[2] = {rows[row][col], '\0'};
+            lv_obj_t* label = lv_label_create(key);
+            lv_label_set_text(label, label_text);
+            lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_center(label);
+        }
+    }
+
+    auto make_action = [&](const char* text, int x, int width, lv_event_cb_t callback, void* user_data) {
+        lv_obj_t* button = lv_obj_create(g_wifi_password_layer);
+        lv_obj_set_size(button, width, 58);
+        lv_obj_set_pos(button, x, 438);
+        lv_obj_set_style_radius(button, 18, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(callback == OnWifiConnectClicked ? app_ui::kBrand : 0xE7ECEA), 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user_data);
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_color(label, callback == OnWifiConnectClicked ? lv_color_white() : lv_color_hex(kTextPrimary), 0);
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_center(label);
+    };
+    make_action("Aa", 18, 76, OnWifiPasswordKeyClicked, const_cast<char*>("CASE"));
+    make_action("删除", 104, 92, OnWifiPasswordKeyClicked, const_cast<char*>("DEL"));
+    make_action("取消", 206, 92, [](lv_event_t*) { CloseWifiPasswordInput(); }, nullptr);
+    make_action("连接", 308, 154, OnWifiConnectClicked, display);
+    lv_obj_move_foreground(g_wifi_password_layer);
+}
+
+void OnWifiNetworkClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    auto* target = static_cast<lv_obj_t*>(lv_event_get_current_target(event));
+    auto* ssid = target ? static_cast<std::string*>(lv_obj_get_user_data(target)) : nullptr;
+    if (display && ssid) ShowWifiPasswordInput(display, ssid->c_str());
 }
 
 void UpdatePetHabitUi() {
@@ -653,9 +797,19 @@ using app_ui::kMoreActions;
 
 const PetSkinPreset kPetSkinPresets[] = {
     {"jinglingshu", "精灵鼠", "当前 SD 卡皮肤", "/sdcard/style/jinglingshu"},
+    {"yingwu", "鹦鹉", "鹦鹉伙伴皮肤", "/sdcard/style/yingwu"},
     {"xiaotu", "小兔星球", "待安装皮肤", "/sdcard/style/xiaotu"},
     {"konglong", "小恐龙", "待安装皮肤", "/sdcard/style/konglong"},
 };
+
+const char* PetStyleDisplayName(const std::string& style_id) {
+    for (const auto& skin : kPetSkinPresets) {
+        if (style_id == skin.style_id) {
+            return skin.title;
+        }
+    }
+    return style_id.c_str();
+}
 
 const char* const kEyeMetrics[] = {"护眼分 86", "远眺 4次", "坐姿 2次"};
 const char* const kEyeDescriptions[] = {
@@ -1182,6 +1336,9 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
     lv_obj_set_style_pad_bottom(title_box, 0, 0);
     lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(title_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // The title is decorative.  It spans the full header and must not compete
+    // with the back button for pointer events.
+    lv_obj_clear_flag(title_box, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t* title_label = lv_label_create(title_box);
     lv_label_set_text(title_label, title);
@@ -1191,6 +1348,7 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
     lv_obj_set_style_text_font(title_label, text_font, 0);
     app_ui::StylePageTitle(title_label);
     lv_obj_set_style_text_color(title_label, text_color, 0);
+    lv_obj_clear_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
 
     if (subtitle != nullptr && subtitle[0] != '\0') {
         lv_obj_t* subtitle_label = lv_label_create(title_box);
@@ -1200,6 +1358,7 @@ lv_obj_t* LcdDisplay::CreateAppHeader(lv_obj_t* parent, const char* title, const
         lv_obj_set_style_text_align(subtitle_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(subtitle_label, subtext_color, 0);
         lv_obj_set_style_margin_top(subtitle_label, 2, 0);
+        lv_obj_clear_flag(subtitle_label, LV_OBJ_FLAG_CLICKABLE);
     }
 
     lv_obj_t* right_space = lv_obj_create(header);
@@ -1323,6 +1482,26 @@ void LcdDisplay::OnAiScenarioClicked(lv_event_t* event) {
     Application::GetInstance().StartAiScenario(scenario->title, scenario->prompt);
     if (display != nullptr) {
         display->ShowAiChat(scenario->title);
+    }
+}
+
+void LcdDisplay::OnAiChatBackClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    if (display != nullptr) {
+        // Defer destruction of the clicked page until LVGL finishes dispatching
+        // the current pointer event.
+        lv_async_call([](void* user_data) {
+            static_cast<LcdDisplay*>(user_data)->ShowAiSpeaking();
+        }, display);
+    }
+}
+
+void LcdDisplay::OnAiChatHomeClicked(lv_event_t* event) {
+    auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+    if (display != nullptr) {
+        lv_async_call([](void* user_data) {
+            static_cast<LcdDisplay*>(user_data)->HideAppGrid();
+        }, display);
     }
 }
 
@@ -1632,6 +1811,134 @@ void LcdDisplay::BringTouchAppLauncherToFront() {
     lv_obj_move_foreground(app_menu_button_);
 }
 
+void LcdDisplay::ShowWifiSetup() {
+    mjpeg_player_port_stop_wait(1000);
+    DisplayLockGuard lock(this);
+    StopPomodoroTimer();
+    CloseWifiPasswordInput();
+
+    if (app_detail_layer_ != nullptr) {
+        lv_obj_del(app_detail_layer_);
+        app_detail_layer_ = nullptr;
+    }
+    if (app_grid_layer_ != nullptr) {
+        lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (face_canvas_ != nullptr) {
+        lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = theme->text_font()->font();
+    auto icon_font = theme->icon_font()->font();
+    app_detail_layer_ = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(app_detail_layer_, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_radius(app_detail_layer_, 0, 0);
+    lv_obj_set_style_bg_color(app_detail_layer_, lv_color_hex(0xF5F8F7), 0);
+    lv_obj_set_style_border_width(app_detail_layer_, 0, 0);
+    lv_obj_set_style_pad_all(app_detail_layer_, 18, 0);
+    lv_obj_clear_flag(app_detail_layer_, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* icon = lv_label_create(app_detail_layer_);
+    lv_label_set_text(icon, FONT_AWESOME_WIFI);
+    lv_obj_set_style_text_font(icon, icon_font, 0);
+    lv_obj_set_style_transform_scale(icon, 260, 0);
+    lv_obj_set_style_text_color(icon, lv_color_hex(app_ui::kBrand), 0);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 12);
+
+    lv_obj_t* title = lv_label_create(app_detail_layer_);
+    lv_label_set_text(title, "选择 Wi-Fi");
+    lv_obj_set_style_text_font(title, text_font, 0);
+    app_ui::StylePageTitle(title);
+    lv_obj_set_style_text_color(title, lv_color_hex(kTextPrimary), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 66);
+
+    lv_obj_t* subtitle = lv_label_create(app_detail_layer_);
+    lv_label_set_text(subtitle, "点击网络并在屏幕上输入密码");
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(kTextSecondary), 0);
+    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 102);
+
+    lv_obj_t* list = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(list, LV_HOR_RES - 36, 520);
+    lv_obj_set_pos(list, 0, 136);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_set_style_pad_row(list, 8, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+
+    auto aps = WifiManager::GetInstance().GetConfigAccessPoints();
+    std::sort(aps.begin(), aps.end(), [](const wifi_ap_record_t& a, const wifi_ap_record_t& b) {
+        return a.rssi > b.rssi;
+    });
+    g_wifi_ssids.clear();
+    g_wifi_ssids.reserve(10);
+    for (const auto& ap : aps) {
+        const char* ssid = reinterpret_cast<const char*>(ap.ssid);
+        if (ssid[0] == '\0') continue;
+        if (std::find(g_wifi_ssids.begin(), g_wifi_ssids.end(), ssid) != g_wifi_ssids.end()) continue;
+        g_wifi_ssids.emplace_back(ssid);
+        if (g_wifi_ssids.size() == 10) break;
+    }
+
+    if (g_wifi_ssids.empty()) {
+        lv_obj_t* empty = lv_label_create(list);
+        lv_label_set_text(empty, "正在扫描附近网络…\n稍后点击刷新");
+        lv_obj_set_width(empty, LV_HOR_RES - 72);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(empty, lv_color_hex(kTextSecondary), 0);
+    } else {
+        for (size_t i = 0; i < g_wifi_ssids.size(); ++i) {
+            lv_obj_t* row = lv_obj_create(list);
+            lv_obj_set_size(row, LV_HOR_RES - 44, 64);
+            lv_obj_set_style_radius(row, 16, 0);
+            lv_obj_set_style_bg_color(row, lv_color_white(), 0);
+            lv_obj_set_style_border_width(row, 1, 0);
+            lv_obj_set_style_border_color(row, lv_color_hex(kBorderSoft), 0);
+            lv_obj_set_style_pad_left(row, 18, 0);
+            lv_obj_set_style_pad_right(row, 18, 0);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_user_data(row, &g_wifi_ssids[i]);
+            lv_obj_add_event_cb(row, OnWifiNetworkClicked, LV_EVENT_CLICKED, this);
+
+            lv_obj_t* name = lv_label_create(row);
+            lv_label_set_text(name, g_wifi_ssids[i].c_str());
+            lv_obj_set_width(name, 330);
+            lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_color(name, lv_color_hex(kTextPrimary), 0);
+            lv_obj_clear_flag(name, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
+            lv_obj_t* signal = lv_label_create(row);
+            lv_label_set_text(signal, FONT_AWESOME_WIFI);
+            lv_obj_set_style_text_font(signal, icon_font, 0);
+            lv_obj_set_style_text_color(signal, lv_color_hex(app_ui::kBrand), 0);
+            lv_obj_clear_flag(signal, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_align(signal, LV_ALIGN_RIGHT_MID, 0, 0);
+        }
+    }
+
+    lv_obj_t* refresh = lv_obj_create(app_detail_layer_);
+    lv_obj_set_size(refresh, 200, 56);
+    lv_obj_align(refresh, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_radius(refresh, 28, 0);
+    lv_obj_set_style_bg_color(refresh, lv_color_hex(app_ui::kBrand), 0);
+    lv_obj_set_style_border_width(refresh, 0, 0);
+    lv_obj_add_flag(refresh, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(refresh, [](lv_event_t* event) {
+        auto* display = static_cast<LcdDisplay*>(lv_event_get_user_data(event));
+        lv_async_call([](void* data) { static_cast<LcdDisplay*>(data)->ShowWifiSetup(); }, display);
+    }, LV_EVENT_CLICKED, this);
+    lv_obj_t* refresh_label = lv_label_create(refresh);
+    lv_label_set_text(refresh_label, "刷新网络");
+    lv_obj_set_style_text_color(refresh_label, lv_color_white(), 0);
+    lv_obj_clear_flag(refresh_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(refresh_label);
+    lv_obj_move_foreground(app_detail_layer_);
+}
+
 void LcdDisplay::ShowAppGrid() {
     // The app layer is fully opaque. Continuing to decode and invalidate a
     // 480x800 MJPEG canvas behind it wastes CPU and makes touch/page rendering
@@ -1648,12 +1955,12 @@ void LcdDisplay::ShowAppGrid() {
         lv_obj_del(app_detail_layer_);
         app_detail_layer_ = nullptr;
     }
-    if (face_canvas_ != nullptr) {
-        lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
-    }
     if (app_grid_layer_ != nullptr) {
         // Reuse the launcher instead of rebuilding all cards and decoding all
         // icons every time a detail page returns.
+        if (face_canvas_ != nullptr) {
+            lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+        }
         lv_obj_remove_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(app_grid_layer_);
         BringTouchAppLauncherToFront();
@@ -1661,7 +1968,10 @@ void LcdDisplay::ShowAppGrid() {
     }
 
     app_grid_layer_ = lv_obj_create(lv_screen_active());
-    BringTouchAppLauncherToFront();
+    // Build the heavy launcher off-screen.  Keeping the home canvas visible
+    // until all cards and images exist prevents an intermediate root-screen
+    // frame from reaching the panel.
+    lv_obj_add_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_size(app_grid_layer_, 480, 800);
     lv_obj_set_pos(app_grid_layer_, 0, 0);
     lv_obj_set_style_radius(app_grid_layer_, 0, 0);
@@ -1803,7 +2113,12 @@ void LcdDisplay::ShowAppGrid() {
     lv_obj_center(home_label);
 
     CreateProductBottomNav(app_grid_layer_, text_font, icon_font);
+    if (face_canvas_ != nullptr) {
+        lv_obj_add_flag(face_canvas_, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_remove_flag(app_grid_layer_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(app_grid_layer_);
+    BringTouchAppLauncherToFront();
 }
 
 void LcdDisplay::ShowLegacyAppGrid() {
@@ -3037,6 +3352,38 @@ void LcdDisplay::ShowAiChat(const char* scenario) {
     lv_obj_set_width(listening, LV_HOR_RES - kPagePad * 2);
     lv_obj_set_style_text_align(listening, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(listening, lv_color_hex(0x6D8190), 0);
+
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    auto text_font = theme->text_font()->font();
+    auto make_navigation_button = [&](const char* text, lv_coord_t x_offset, lv_coord_t width,
+                                      uint32_t color, lv_event_cb_t callback) {
+        lv_obj_t* button = lv_obj_create(app_detail_layer_);
+        lv_obj_set_size(button, width, 56);
+        lv_obj_align(button, LV_ALIGN_BOTTOM_RIGHT, x_offset, -14);
+        lv_obj_set_style_radius(button, 28, 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+        lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        app_ui::StylePressable(button);
+        lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, this);
+
+        lv_obj_t* label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_font(label, text_font, 0);
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_center(label);
+        lv_obj_move_foreground(button);
+    };
+
+    make_navigation_button(FONT_AWESOME_ANGLE_LEFT "  上一页", -150, 136,
+                           0x60758A, OnAiChatBackClicked);
+    make_navigation_button(FONT_AWESOME_HOUSE "  主页", -14, 124,
+                           app_ui::kBrand, OnAiChatHomeClicked);
     lv_obj_move_foreground(app_detail_layer_);
 }
 
@@ -3862,7 +4209,7 @@ void LcdDisplay::ShowPetGarden() {
     lv_obj_set_flex_flow(hero_text, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t* pet_name = lv_label_create(hero_text);
-    lv_label_set_text(pet_name, current_style == "jinglingshu" ? "精灵鼠" : current_style.c_str());
+    lv_label_set_text(pet_name, PetStyleDisplayName(current_style));
     lv_obj_set_style_text_font(pet_name, text_font, 0);
     app_ui::StylePageTitle(pet_name);
     lv_obj_set_style_text_color(pet_name, lv_color_white(), 0);

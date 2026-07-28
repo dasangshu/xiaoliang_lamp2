@@ -1,6 +1,9 @@
 #include "wifi_board.h"
 
 #include "display.h"
+#if CONFIG_BOARD_TYPE_XIAOLIANG_TOUCH
+#include "display/lcd_display.h"
+#endif
 #include "application.h"
 #include "system_info.h"
 #include "settings.h"
@@ -209,6 +212,11 @@ void WifiBoard::StartWifiConfigMode() {
         hint += wifi_manager.GetApWebUrl();
 
         Application::GetInstance().Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
+#if CONFIG_BOARD_TYPE_XIAOLIANG_TOUCH
+        if (auto* lcd = dynamic_cast<LcdDisplay*>(Board::GetInstance().GetDisplay())) {
+            lcd->ShowWifiSetup();
+        }
+#endif
     });
 #elif CONFIG_USE_ESP_BLUFI_WIFI_PROVISIONING
     auto &blufi = Blufi::GetInstance();

@@ -190,6 +190,19 @@ private:
             ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp_panel, true));
         }
 
+        // The DPI driver rotates through three framebuffers in the
+        // avoid-tearing path.  Initialize every buffer before enabling LVGL;
+        // otherwise the first swap to a buffer that has not yet been drawn can
+        // expose its power-on contents as a brief blue frame.
+        void* framebuffers[3] = {nullptr, nullptr, nullptr};
+        ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(
+            disp_panel, 3, &framebuffers[0], &framebuffers[1], &framebuffers[2]));
+        for (void* framebuffer : framebuffers) {
+            if (framebuffer != nullptr) {
+                memset(framebuffer, 0xFF, DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t));
+            }
+        }
+
         display_ = new MipiLcdDisplay(io, disp_panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
                                       DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);

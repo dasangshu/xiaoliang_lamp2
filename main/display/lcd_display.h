@@ -90,6 +90,8 @@ protected:
     static void OnAppActionClicked(lv_event_t* event);
     static void OnMusicSceneClicked(lv_event_t* event);
     static void OnAiScenarioClicked(lv_event_t* event);
+    static void OnAiChatBackClicked(lv_event_t* event);
+    static void OnAiChatHomeClicked(lv_event_t* event);
     static void OnDeviceWifiClicked(lv_event_t* event);
     static void OnDeviceVolumeChanged(lv_event_t* event);
     static void OnDeviceBrightnessChanged(lv_event_t* event);
@@ -122,6 +124,7 @@ public:
     bool ShowStaticIdleFace();
     void PlayGifFromFile(const char* filepath);
     void OpenAppGrid();
+    void ShowWifiSetup();
 
     // Set whether to hide chat messages/subtitles
     void SetHideSubtitle(bool hide);
